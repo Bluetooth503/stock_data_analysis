@@ -13,7 +13,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('stock_data.log'),
+        logging.FileHandler('./stock_data.log'),
         logging.StreamHandler()
     ]
 )
@@ -233,7 +233,7 @@ def main():
                 continue
             
             # 添加延时，避免请求过于频繁
-            time.sleep(0.5)
+            time.sleep(0.1)
             
     except FileNotFoundError as e:
         logging.error(str(e))
@@ -243,7 +243,7 @@ def main():
         logging.error(f"程序执行出错: {str(e)}")
     finally:
         # 清理资源
-        bs.logout()
+        # bs.logout()
         logging.info("已登出 baostock")
         
         if conn:
