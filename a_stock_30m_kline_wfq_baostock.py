@@ -60,6 +60,17 @@ def get_stock_codes(conn):
         cursor.execute("SELECT ts_code FROM a_stock_name")
         return [row[0] for row in cursor.fetchall()]
 
+def get_latest_record_date(conn, ts_code):
+    """获取指定股票最新的记录日期"""
+    with conn.cursor() as cursor:
+        cursor.execute("""
+            SELECT MAX(trade_date) 
+            FROM a_stock_30m_kline_wfq_baostock 
+            WHERE ts_code = %s
+        """, (ts_code,))
+        result = cursor.fetchone()[0]
+        return result if result else '2000-01-01'
+
 def download_30min_kline(stock_code, start_date, end_date):
     """下载指定股票的30分钟K线数据"""
     bs_code = convert_to_baostock_code(stock_code)
@@ -91,49 +102,38 @@ def download_30min_kline(stock_code, start_date, end_date):
     return df
 
 def save_to_database(conn, df, ts_code):
-    """保存数据到数据库"""
+    """保存新数据到数据库，跳过已存在的记录"""
     if df is None or len(df) == 0:
         return
         
-    # 转换时间格式
     def convert_time(time_str):
-        """将baostock的时间字符串转换为PostgreSQL的time格式
-        输入格式: '20190102100000000'
-        输出格式: '10:00:00'
-        """
+        """将baostock的时间字符串转换为PostgreSQL的time格式"""
         return f"{time_str[8:10]}:{time_str[10:12]}:{time_str[12:14]}"
-        
+    
+    # 准备数据
+    records = [
+        (
+            ts_code,
+            row['date'],
+            convert_time(row['time']),
+            row['open'],
+            row['high'],
+            row['low'],
+            row['close'],
+            row['volume'],
+            row['amount'],
+            row['adjustflag']
+        )
+        for _, row in df.iterrows()
+    ]
+    
     with conn.cursor() as cur:
-        # 准备数据
-        records = [
-            (
-                ts_code,
-                row['date'],
-                convert_time(row['time']),  # 转换时间格式
-                row['open'],
-                row['high'],
-                row['low'],
-                row['close'],
-                row['volume'],
-                row['amount'],
-                row['adjustflag']
-            )
-            for _, row in df.iterrows()
-        ]
-        
-        # 使用批量插入，如果记录已存在则更新
+        # 使用INSERT IGNORE语法，忽略已存在的记录
         cur.executemany("""
             INSERT INTO a_stock_30m_kline_wfq_baostock 
             (ts_code, trade_date, trade_time, open, high, low, close, volume, amount, adjustflag)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (ts_code, trade_date, trade_time) DO UPDATE SET
-                open = EXCLUDED.open,
-                high = EXCLUDED.high,
-                low = EXCLUDED.low,
-                close = EXCLUDED.close,
-                volume = EXCLUDED.volume,
-                amount = EXCLUDED.amount,
-                adjustflag = EXCLUDED.adjustflag
+            ON CONFLICT (ts_code, trade_date, trade_time) DO NOTHING
         """, records)
         
     conn.commit()
@@ -160,11 +160,15 @@ def main():
             print(f"正在处理 {stock_code}")
             
             try:
+                # 获取最新记录日期
+                latest_date = get_latest_record_date(conn, stock_code)
+                print(f"{stock_code} 最新记录日期: {latest_date}")
+                
+                # 下载新数据
                 df = download_30min_kline(
                     stock_code,
-                    start_date='2000-01-01',  # 你可以根据需要修改日期范围
-                    end_date  ='2024-12-31',  # 你可以根据需要修改日期范围
-                    # end_date=datetime.now().strftime('%Y-%m-%d')
+                    start_date=latest_date,
+                    end_date='2024-12-31'  # 你可以根据需要修改日期范围
                 )
                 
                 if df is not None:
@@ -183,4 +187,4 @@ def main():
         conn.close()
 
 if __name__ == "__main__":
-    main() 
+    main()
