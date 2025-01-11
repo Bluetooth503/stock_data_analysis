@@ -170,5 +170,9 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-# 配置文件
+
+# Enlai
 config.ini
+.DS_Store
+xtquant
+*.csv
