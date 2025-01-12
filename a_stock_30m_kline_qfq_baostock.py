@@ -220,7 +220,8 @@ def main():
         
         # 设置时间范围
         start_date = '2000-01-01'
-        end_date = datetime.now().strftime('%Y-%m-%d')
+        end_date   = '2024-12-31'
+        # end_date = datetime.now().strftime('%Y-%m-%d')
         
         # 下载并保存每只股票的数据
         for i, stock_code in enumerate(stock_codes, 1):

@@ -18,10 +18,14 @@ def convert_to_tushare_code(baostock_code):
     market = market.upper()
     return f"{code}.{market}"
 
-def read_config():
-    """读取配置文件"""
+def load_config():
+    """加载配置文件"""
     config = configparser.ConfigParser()
-    config.read('config.ini')
+    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+    if not os.path.exists(config_path):
+        raise FileNotFoundError("配置文件 'config.ini' 不存在！")
+    
+    config.read(config_path, encoding='utf-8')
     return config
 
 def get_db_connection(config):
@@ -140,7 +144,7 @@ def save_to_database(conn, df, ts_code):
 
 def main():
     # 读取配置文件
-    config = read_config()
+    config = load_config()
     
     # 登录 baostock
     bs.login()
