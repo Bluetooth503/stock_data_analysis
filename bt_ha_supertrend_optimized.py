@@ -3,6 +3,18 @@ from common import *
 import backtrader as bt
 import optuna
 import quantstats_lumi as qs
+from pymoo.core.problem import Problem
+from pymoo.algorithms.moo.nsga2 import NSGA2
+from pymoo.optimize import minimize
+from pymoo.termination import get_termination
+from pymoo.operators.sampling.rnd import FloatRandomSampling
+from pymoo.operators.crossover.sbx import SBX
+from pymoo.operators.mutation.pm import PM
+from pymoo.config import Config
+import numpy as np
+
+# 禁用PyMoo的编译警告
+Config.warnings['not_compiled'] = False
 
 # Heikin-Ashi数据生成
 class HeikinAshiData(bt.feeds.PandasData):
@@ -69,60 +81,58 @@ class HeikinAshiSuperTrendStrategy(bt.Strategy):
             self.close()
             self.in_position = False
 
-# 定义优化函数
-def optimize_strategy(trial):
-    supertrend_period = trial.suggest_int('supertrend_period', 10, 50, step=10)
-    supertrend_multiplier = trial.suggest_int('supertrend_multiplier', 2, 6, step=1)
-    df = get_stock_data('qfq', stock_code, start_date, end_date)
-    df = prepare_heikin_ashi_data(df)
-    cerebro = bt.Cerebro()
-    data = HeikinAshiData(dataname=df)
-    cerebro.adddata(data)
-    cerebro.broker.setcash(100000)
-    cerebro.broker.setcommission(commission=0.0003)
-    cerebro.addstrategy(HeikinAshiSuperTrendStrategy,
-                        supertrend_period=supertrend_period,
-                        supertrend_multiplier=supertrend_multiplier)
-    cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe')
-    cerebro.addanalyzer(bt.analyzers.TimeReturn, _name='timereturn')
-    cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trades')
-    results = cerebro.run()
-    strat = results[0]
-    
-    # 获取回测结果
-    returns = pd.Series(strat.analyzers.timereturn.get_analysis())
-    if returns.index.tz is None:
-        returns.index = returns.index.tz_localize('Asia/Shanghai')
-    returns.index = returns.index.tz_localize(None)
-    
-    # 计算指标
-    sortino_ratio = qs.stats.sortino(returns)
-    trades = strat.analyzers.trades.get_analysis()
-    total_trades = trades.total.total if 'total' in trades and 'total' in trades.total else 0
-    won_trades = trades.won.total if 'won' in trades and 'total' in trades.won else 0
-    lost_trades = trades.lost.total if 'lost' in trades and 'total' in trades.lost else 0
-    
-    # 净利润率
-    final_value = cerebro.broker.getvalue()
-    net_profit = final_value - 100000
-    net_profit_ratio = (net_profit / 100000) * 100
-    
-    # 胜率
-    win_rate = (won_trades / total_trades) * 100 if total_trades > 0 else 0
-    
-    # 平均盈亏比
-    avg_profit = trades.won.pnl.average if won_trades > 0 else 0
-    avg_loss = trades.lost.pnl.average if lost_trades > 0 else 0
-    profit_loss_ratio = (avg_profit / abs(avg_loss)) if avg_loss != 0 else float('inf')
-    
-    # 加权平均
-    weights = {'sortino': 0.4, 'net_profit_ratio': 0.2, 'win_rate': 0.2, 'profit_loss_ratio': 0.2}
-    weighted_score = (weights['sortino'] * sortino_ratio +
-                      weights['net_profit_ratio'] * net_profit_ratio +
-                      weights['win_rate'] * win_rate +
-                      weights['profit_loss_ratio'] * profit_loss_ratio)
-    
-    return weighted_score
+# 定义多目标优化问题
+class TradingProblem(Problem):
+    def __init__(self, stock_code, start_date, end_date):
+        super().__init__(
+            n_var=2,  # 两个变量：period和multiplier
+            n_obj=2,  # 两个目标：胜率和盈亏比
+            n_constr=0,  # 没有约束
+            # period的可选值：[10, 20, 30, 40, 50]
+            # multiplier的可选值：[2, 3, 4, 5, 6]
+            xl=np.array([0, 0]),  # 下界（用索引表示）
+            xu=np.array([4, 4]),  # 上界（用索引表示）
+            vtype=np.int32  # 设置变量类型为整数
+        )
+        self.stock_code = stock_code
+        self.start_date = start_date
+        self.end_date = end_date
+        # 定义参数的可选值
+        self.period_values = np.arange(10, 51, 10)  # [10, 20, 30, 40, 50]
+        self.multiplier_values = np.arange(2, 7, 1)  # [2, 3, 4, 5, 6]
+
+    def _evaluate(self, x, out, *args, **kwargs):
+        F = np.zeros((x.shape[0], 2))
+        
+        for i in range(x.shape[0]):
+            # 从索引获取实际参数值
+            period = self.period_values[int(x[i, 0])]
+            multiplier = self.multiplier_values[int(x[i, 1])]
+            
+            df = get_stock_data('qfq', self.stock_code, self.start_date, self.end_date)
+            df = prepare_heikin_ashi_data(df)
+            cerebro = bt.Cerebro()
+            data = HeikinAshiData(dataname=df)
+            cerebro.adddata(data)
+            cerebro.broker.setcash(100000)
+            cerebro.broker.setcommission(commission=0.0003)
+            cerebro.addstrategy(HeikinAshiSuperTrendStrategy,
+                              supertrend_period=period,
+                              supertrend_multiplier=multiplier)
+            cerebro.addanalyzer(bt.analyzers.TimeReturn, _name='timereturn')
+            results = cerebro.run()
+            strat = results[0]
+            returns = pd.Series(strat.analyzers.timereturn.get_analysis())
+            
+            # 计算目标值
+            win_rate = qs.stats.win_rate(returns)
+            profit_factor = qs.stats.profit_factor(returns)
+            
+            # 由于pymoo是最小化问题，所以取负值
+            F[i, 0] = -win_rate
+            F[i, 1] = -profit_factor
+        
+        out["F"] = F
 
 def prepare_heikin_ashi_data(df):
     """计算Heikin-Ashi数据并返回更新后的DataFrame"""
@@ -139,11 +149,58 @@ if __name__ == '__main__':
     stock_code = '000858.SZ'
     start_date = '2000-01-01'
     end_date   = '2024-12-31'
-    print('正在运行参数优化...')
-    study = optuna.create_study(direction='maximize')
-    study.optimize(optimize_strategy, n_trials=50)
-    best_params = study.best_params
-    print('最佳参数:', best_params)
+    
+    # 创建问题实例
+    problem = TradingProblem(stock_code, start_date, end_date)
+    
+    # 创建算法实例，添加采样、交叉和变异操作
+    algorithm = NSGA2(
+        pop_size=20,
+        n_offsprings=10,
+        sampling=FloatRandomSampling(),
+        crossover=SBX(prob=0.9, eta=15),
+        mutation=PM(eta=20),
+        eliminate_duplicates=True
+    )
+    
+    # 设置终止条件
+    termination = get_termination("n_gen", 10)
+    
+    # 运行优化
+    print('正在运行多目标参数优化...')
+    res = minimize(
+        problem,
+        algorithm,
+        termination,
+        seed=1,
+        verbose=True
+    )
+    
+    # 输出结果
+    print("\n=== 优化结果 ===")
+    print("最优解集合:")
+    for i in range(len(res.X)):
+        period_idx = int(res.X[i, 0])
+        multiplier_idx = int(res.X[i, 1])
+        period = problem.period_values[period_idx]
+        multiplier = problem.multiplier_values[multiplier_idx]
+        win_rate = -res.F[i, 0] * 100
+        profit_factor = -res.F[i, 1]
+        print(f"\n解 {i+1}:")
+        print(f"参数: period={period}, multiplier={multiplier}")
+        print(f"胜率: {win_rate:.2f}%")
+        print(f"盈亏比: {profit_factor:.2f}")
+    
+    # 选择一个平衡的解进行回测
+    balanced_idx = len(res.X) // 2  # 选择中间的解
+    period_idx = int(res.X[balanced_idx, 0])
+    multiplier_idx = int(res.X[balanced_idx, 1])
+    best_params = {
+        'supertrend_period': problem.period_values[period_idx],
+        'supertrend_multiplier': problem.multiplier_values[multiplier_idx]
+    }
+    
+    # 使用选定的参数进行回测
     df = get_stock_data('qfq', stock_code, start_date, end_date)
     df = prepare_heikin_ashi_data(df)
     cerebro = bt.Cerebro()
@@ -152,51 +209,31 @@ if __name__ == '__main__':
     cerebro.broker.setcash(100000)
     cerebro.broker.setcommission(commission=0.0003)
     cerebro.addstrategy(HeikinAshiSuperTrendStrategy,
-                        supertrend_period=best_params['supertrend_period'],
-                        supertrend_multiplier=best_params['supertrend_multiplier'])
+                       supertrend_period=best_params['supertrend_period'],
+                       supertrend_multiplier=best_params['supertrend_multiplier'])
     cerebro.addanalyzer(bt.analyzers.TimeReturn, _name='timereturn')
-    cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trades')
     results = cerebro.run()
     strat = results[0]
     returns = pd.Series(strat.analyzers.timereturn.get_analysis())
-    if returns.index.tz is None:
-        returns.index = returns.index.tz_localize('Asia/Shanghai')
-    returns.index = returns.index.tz_localize(None)
     
-    # Sortino Ratio
+    # 计算并打印最终结果
+    cumulative_returns = qs.stats.compsum(returns).iloc[-1] * 100
+    win_rate = qs.stats.win_rate(returns) * 100
+    profit_factor = qs.stats.profit_factor(returns)
     sortino_ratio = qs.stats.sortino(returns)
     
-    # 交易分析
-    trades = strat.analyzers.trades.get_analysis()
-    total_trades = trades.total.total if 'total' in trades and 'total' in trades.total else 0
-    won_trades = trades.won.total if 'won' in trades and 'total' in trades.won else 0
-    lost_trades = trades.lost.total if 'lost' in trades and 'total' in trades.lost else 0
-    
-    # 净利润率
-    final_value = cerebro.broker.getvalue()
-    net_profit = final_value - 100000
-    net_profit_ratio = (net_profit / 100000) * 100
-    
-    # 胜率
-    win_rate = (won_trades / total_trades) * 100 if total_trades > 0 else 0
-    
-    # 平均盈亏比
-    avg_profit = trades.won.pnl.average if won_trades > 0 else 0
-    avg_loss = trades.lost.pnl.average if lost_trades > 0 else 0
-    profit_loss_ratio = (avg_profit / abs(avg_loss)) if avg_loss != 0 else float('inf')
-    
-    # 打印评价指标
-    print('\n=== 最佳参数的评价指标 ===')
+    print('\n=== 选定参数的回测结果 ===')
+    print(f'参数: period={best_params["supertrend_period"]}, multiplier={best_params["supertrend_multiplier"]}')
     print(f'Sortino Ratio: {sortino_ratio:.2f}')
-    print(f'净利润率: {net_profit_ratio:.2f}%')
+    print(f'累积收益率: {cumulative_returns:.2f}%')
     print(f'胜率: {win_rate:.2f}%')
-    print(f'平均盈亏比: {profit_loss_ratio:.2f}')
-
-    # 使用股票代码动态命名HTML文件
+    print(f'盈亏比: {profit_factor:.2f}')
+    
+    # 生成报告
     qs.reports.html(
         returns, 
         output=f'{stock_code}_optimized.html',
         download_filename=f'{stock_code}_optimized.html',
         title=f'{stock_code} 回测报告'
     )
-    print(f'已生成业绩报告：{stock_code}_optimized.html') 
+    print(f'\n已生成业绩报告：{stock_code}_optimized.html') 
