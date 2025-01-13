@@ -43,6 +43,11 @@ def get_pg_connection_string(config):
     pg_config = config['postgresql']
     return f"postgresql://{pg_config['user']}:{pg_config['password']}@{pg_config['host']}:{pg_config['port']}/{pg_config['database']}"
 
+def get_mysql_connection_string(config):
+    """获取MySQL连接字符串"""
+    mysql_config = config['mysql']
+    return f"mysql+pymysql://{mysql_config['user']}:{mysql_config['password']}@{mysql_config['host']}:{mysql_config['port']}/{mysql_config['database']}"
+
 def get_stock_data(fq_code, ts_code, start_date=None, end_date=None):
     """从PostgreSQL数据库获取股票数据，返回DataFrame"""
     config = load_config()
