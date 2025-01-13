@@ -35,7 +35,39 @@ def load_config():
     config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
     if not os.path.exists(config_path):
         raise FileNotFoundError("配置文件 'config.ini' 不存在！")
-    
     config.read(config_path, encoding='utf-8')
     return config
+
+def get_pg_connection_string(config):
+    """获取PostgreSQL连接字符串"""
+    pg_config = config['postgresql']
+    return f"postgresql://{pg_config['user']}:{pg_config['password']}@{pg_config['host']}:{pg_config['port']}/{pg_config['database']}"
+
+def get_stock_data(fq_code, ts_code, start_date=None, end_date=None):
+    """从PostgreSQL数据库获取股票数据，返回DataFrame"""
+    config = load_config()
+    engine = create_engine(get_pg_connection_string(config))
+    query = f"""
+        SELECT ts_code, trade_date, trade_time, open, high, low, close, volume, amount
+        FROM a_stock_30m_kline_{fq_code}_baostock
+        WHERE ts_code = '{ts_code}'
+    """
+    # 添加日期范围条件
+    if start_date:
+        query += f" AND trade_date >= '{start_date}'"
+    if end_date:
+        query += f" AND trade_date <= '{end_date}'"
+    # 按日期和时间排序
+    query += "ORDER BY trade_date, trade_time"
+    df = pd.read_sql(query, engine)
+    # 合并日期和时间
+    df['datetime'] = pd.to_datetime(df['trade_date'].astype(str) + ' ' + df['trade_time'].astype(str))
+    df.set_index('datetime', inplace=True)
+    # 确保数据类型正确
+    numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount']
+    for col in numeric_columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    # 删除任何包含 NaN 的行
+    df = df.dropna()
+    return df
 

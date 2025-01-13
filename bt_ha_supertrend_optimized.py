@@ -1,7 +1,7 @@
+# -*- coding: utf-8 -*-
+from common import *
 import backtrader as bt
-import pandas as pd
 import optuna
-from common import get_stock_data
 import quantstats_lumi as qs
 
 # Heikin-Ashi数据生成
@@ -73,7 +73,7 @@ class HeikinAshiSuperTrendStrategy(bt.Strategy):
 def optimize_strategy(trial):
     supertrend_period = trial.suggest_int('supertrend_period', 10, 50, step=10)
     supertrend_multiplier = trial.suggest_int('supertrend_multiplier', 2, 6, step=1)
-    df = get_stock_data('600000.SH', '2000-01-01', '2024-12-31')
+    df = get_stock_data('qfq', stock_code, start_date, end_date)
     df = prepare_heikin_ashi_data(df)
     cerebro = bt.Cerebro()
     data = HeikinAshiData(dataname=df)
@@ -136,12 +136,15 @@ def prepare_heikin_ashi_data(df):
     return df
 
 if __name__ == '__main__':
+    stock_code = '000858.SZ'
+    start_date = '2000-01-01'
+    end_date   = '2024-12-31'
     print('正在运行参数优化...')
     study = optuna.create_study(direction='maximize')
     study.optimize(optimize_strategy, n_trials=50)
     best_params = study.best_params
     print('最佳参数:', best_params)
-    df = get_stock_data('600000.SH', '2000-01-01', '2024-12-31')
+    df = get_stock_data('qfq', stock_code, start_date, end_date)
     df = prepare_heikin_ashi_data(df)
     cerebro = bt.Cerebro()
     data = HeikinAshiData(dataname=df)
@@ -189,11 +192,11 @@ if __name__ == '__main__':
     print(f'胜率: {win_rate:.2f}%')
     print(f'平均盈亏比: {profit_loss_ratio:.2f}')
 
-    # 生成quantstats报告
+    # 使用股票代码动态命名HTML文件
     qs.reports.html(
         returns, 
-        output='600000_SH_optimized.html',
-        download_filename='600000_SH_optimized.html',
-        title='600000.SH 回测报告'
+        output=f'{stock_code}_optimized.html',
+        download_filename=f'{stock_code}_optimized.html',
+        title=f'{stock_code} 回测报告'
     )
-    print('已生成业绩报告：600000_SH_optimized.html') 
+    print(f'已生成业绩报告：{stock_code}_optimized.html') 
