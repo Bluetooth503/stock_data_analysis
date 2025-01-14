@@ -43,17 +43,12 @@ def get_pg_connection_string(config):
     pg_config = config['postgresql']
     return f"postgresql://{pg_config['user']}:{pg_config['password']}@{pg_config['host']}:{pg_config['port']}/{pg_config['database']}"
 
-def get_mysql_connection_string(config):
-    """获取MySQL连接字符串"""
-    mysql_config = config['mysql']
-    return f"mysql+pymysql://{mysql_config['user']}:{mysql_config['password']}@{mysql_config['host']}:{mysql_config['port']}/{mysql_config['database']}"
-
 def get_stock_data(fq_code, ts_code, start_date=None, end_date=None):
     """从PostgreSQL数据库获取股票数据，返回DataFrame"""
     config = load_config()
     engine = create_engine(get_pg_connection_string(config))
     query = f"""
-        SELECT ts_code, trade_date, trade_time, open, high, low, close, volume, amount
+        SELECT ts_code, trade_date, trade_time, open, high, low, close, volume
         FROM a_stock_30m_kline_{fq_code}_baostock
         WHERE ts_code = '{ts_code}'
     """
@@ -69,10 +64,9 @@ def get_stock_data(fq_code, ts_code, start_date=None, end_date=None):
     df['datetime'] = pd.to_datetime(df['trade_date'].astype(str) + ' ' + df['trade_time'].astype(str))
     df.set_index('datetime', inplace=True)
     # 确保数据类型正确
-    numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount']
+    numeric_columns = ['open', 'high', 'low', 'close', 'volume']
     for col in numeric_columns:
         df[col] = pd.to_numeric(df[col], errors='coerce')
     # 删除任何包含 NaN 的行
     df = df.dropna()
     return df
-
