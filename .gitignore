@@ -178,3 +178,5 @@ xtquant
 *.csv
 *.log
 *.html
+*.rar
+*.ipynb
