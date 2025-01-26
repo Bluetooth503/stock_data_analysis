@@ -8,21 +8,21 @@ logger = setup_logger()  # 初始化日志
 
 # 定义初始变量
 stock_list = xtdata.get_stock_list_in_sector('沪深A股')
+# stock_list = ['600051.SH','603237.SH','688337.SH']
 start_time = '20000101'
 end_time   = datetime.today().strftime('%Y%m%d')
 period     = '5m'
 table_name = 'a_stock_5m_kline_wfq_qmt'
-
+tmp_table  = f"temp_{table_name}_{int(time.time())}"
 
 # 先把加密数据下载到本地,再用get_local_data读取
 def download_history_kline(stock_list, start_time, end_time, period):
     for stock_code in tqdm(stock_list, desc = '开始下载数据到本地'):
-        # xtdata.download_history_data(stock_code, period = period, start_time = start_time, end_time = end_time) # 全量下载
-        xtdata.download_history_data(stock_code, period = period, start_time = '', end_time = '', incrementally = True) # 增量下载
+        xtdata.download_history_data(stock_code, period = period, start_time = start_time, end_time = end_time) # 全量下载
+        # xtdata.download_history_data(stock_code, period = period, start_time = '', end_time = '', incrementally = True) # 增量下载
 
-# download_history_kline(stock_list, start_time, end_time, period)
+download_history_kline(stock_list, start_time, end_time, period)
 data_dict = xtdata.get_local_data(stock_list = stock_list, period = period, start_time = start_time, end_time = end_time, dividend_type = 'none')
-
 
 def process_stock_data(df: pd.DataFrame) -> pd.DataFrame:
     """处理合并后的所有股票数据"""
@@ -38,7 +38,6 @@ def process_stock_data(df: pd.DataFrame) -> pd.DataFrame:
     
     numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount', 'settelement_price', 'open_interest', 'pre_close']
     df[numeric_columns] = df[numeric_columns].apply(pd.to_numeric, errors='coerce')
-    
     df['suspend_flag'] = df['suspend_flag'].astype(bool)
     
     return df[['trade_time', 'ts_code', 'open', 'high', 'low', 'close', 
@@ -95,16 +94,11 @@ def main():
 
     # 更新数据
     insert_sql = f"""
-    INSERT INTO {table_name} 
-    (trade_time, ts_code, open, high, low, close, volume, amount,
-        settelement_price, open_interest, pre_close, suspend_flag)
-    SELECT 
-        trade_time, ts_code, open, high, low, close, volume, amount,
-        settelement_price, open_interest, pre_close, suspend_flag
-    FROM temp_{table_name}_{int(time.time())}
-    ON CONFLICT (trade_time, ts_code) DO NOTHING;
+    INSERT INTO {table_name} (trade_time, ts_code, open, high, low, close, volume, amount, settelement_price, open_interest, pre_close, suspend_flag)
+    SELECT trade_time, ts_code, open, high, low, close, volume, amount, settelement_price, open_interest, pre_close, suspend_flag
+    FROM {tmp_table} ON CONFLICT (trade_time, ts_code) DO NOTHING;
     """
-    upsert_data(df, table_name, insert_sql, engine)
+    upsert_data(df, table_name, tmp_table, insert_sql, engine)
         
 
 if __name__ == "__main__":

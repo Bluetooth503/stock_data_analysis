@@ -124,14 +124,27 @@ def setup_logger(prefix: str = None) -> logger:
     return logger
 
 
-def upsert_data(df: pd.DataFrame, table_name: str, insert_sql: str, engine) -> None:
+def upsert_data(df: pd.DataFrame, table_name: str, temp_table: str,insert_sql: str, engine) -> None:
     """使用临时表进行批量更新"""
-    temp_table = f"temp_{table_name}_{int(time.time())}"
-    
     with engine.begin() as conn:
         print('开始导入数据到临时表')
-        df.to_sql(temp_table, conn, if_exists='replace', index=False, method='multi', chunksize=10000)
+        df.to_sql(temp_table, conn, if_exists='replace', index=False, method='multi', chunksize=100000)
         print('从临时表插入数据到目标表')
         conn.execute(text(insert_sql))
-        print('drop临时表')
+        print('DROP临时表')
         conn.execute(text(f"DROP TABLE IF EXISTS {temp_table}"))
+
+def convert_date_format(date_str: str) -> str:
+    """将 YYYYMMDD 格式转换为 YYYY-MM-DD 格式"""
+    return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+
+def format_time(time_str):
+    """
+    格式化时间字符串，将baostock返回的时间格式转换为 HH:MM:00
+    输入格式: YYYYMMDDHHMMSSMMM (如: 20250124100000000)
+    输出格式: HH:MM:00
+    """
+    # 提取小时和分钟
+    hour = time_str[8:10]
+    minute = time_str[10:12]
+    return f"{hour}:{minute}:00"
