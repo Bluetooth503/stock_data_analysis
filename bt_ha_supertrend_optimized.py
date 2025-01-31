@@ -11,8 +11,7 @@ from pymoo.operators.sampling.rnd import FloatRandomSampling
 from pymoo.operators.crossover.sbx import SBX
 from pymoo.operators.mutation.pm import PM
 from pymoo.config import Config
-import numpy as np
-from sqlalchemy import create_engine
+
 
 #################################
 # 参数设置
@@ -129,7 +128,7 @@ class TradingProblem(Problem):
         
         # 在初始化时获取数据，避免重复请求
         print('正在获取股票数据...')
-        self.df = get_stock_data('qfq', self.stock_code, self.start_date, self.end_date)
+        self.df = get_30m_kline_data('qfq', self.stock_code, self.start_date, self.end_date)
         self.df = prepare_heikin_ashi_data(self.df)
         
         # 在初始化时获取基准数据

@@ -53,26 +53,23 @@ def get_mysql_connection_string(config):
     mysql_config = config['mysql']
     return f"mysql+pymysql://{mysql_config['user']}:{mysql_config['password']}@{mysql_config['host']}:{mysql_config['port']}/{mysql_config['database']}"
 
-def get_stock_data(fq_code, ts_code, start_date=None, end_date=None):
+def get_30m_kline_data(fq_code, ts_code, start_date=None, end_date=None):
     """从PostgreSQL数据库获取股票数据，返回DataFrame"""
     config = load_config()
     engine = create_engine(get_pg_connection_string(config))
     query = f"""
-        SELECT ts_code, trade_date, trade_time, open, high, low, close, volume, amount
+        SELECT trade_time, ts_code, open, high, low, close, volume, amount
         FROM a_stock_30m_kline_{fq_code}_baostock
         WHERE ts_code = '{ts_code}'
     """
     # 添加日期范围条件
     if start_date:
-        query += f" AND trade_date >= '{start_date}'"
+        query += f" AND trade_time >= '{start_date}'"
     if end_date:
-        query += f" AND trade_date <= '{end_date}'"
+        query += f" AND trade_time <= '{end_date}'"
     # 按日期和时间排序
-    query += "ORDER BY trade_date, trade_time"
+    query += "ORDER BY trade_time"
     df = pd.read_sql(query, engine)
-    # 合并日期和时间
-    df['datetime'] = pd.to_datetime(df['trade_date'].astype(str) + ' ' + df['trade_time'].astype(str))
-    df.set_index('datetime', inplace=True)
     # 确保数据类型正确
     numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount']
     for col in numeric_columns:
