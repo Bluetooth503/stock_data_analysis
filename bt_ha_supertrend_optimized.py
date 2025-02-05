@@ -28,9 +28,9 @@ PERIOD_RANGE = np.arange(10, 101, 10)     # [10, 20, 30, 40, 50]
 MULTIPLIER_RANGE = np.arange(1, 11, 1)    # [2, 3, 4, 5, 6]
 
 # NSGA2算法参数
-POPULATION_SIZE = 20
-OFFSPRING_SIZE = 10
-N_GENERATIONS = 10
+POPULATION_SIZE = 10  # 20
+OFFSPRING_SIZE  = 5   # 10
+N_GENERATIONS   = 5   # 10
 
 #################################
 
@@ -46,17 +46,9 @@ def prepare_heikin_ashi_data(df):
     """计算Heikin-Ashi数据并返回更新后的DataFrame"""
     df['trade_time'] = pd.to_datetime(df['trade_time'])
     df.set_index('trade_time', inplace=True)
-    
-    # 初始化ha_open列
-    df['ha_open'] = df['open']
-    
     df['ha_close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
-    
-    # 从第二行开始计算ha_open
-    for i in range(1, len(df)):
-        df.iloc[i, df.columns.get_loc('ha_open')] = (df.iloc[i-1, df.columns.get_loc('ha_open')] + 
-                                                    df.iloc[i-1, df.columns.get_loc('ha_close')]) / 2
-    
+    df['ha_open'] = (df['open'].shift(1) + df['close'].shift(1)) / 2
+    df['ha_open'].iloc[0] = df['open'].iloc[0]  # 第一行的 ha_open 等于 open
     df['ha_high'] = df[['high', 'ha_open', 'ha_close']].max(axis=1)
     df['ha_low'] = df[['low', 'ha_open', 'ha_close']].min(axis=1)
     return df
