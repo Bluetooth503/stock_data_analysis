@@ -24,7 +24,7 @@ START_DATE = '2000-01-01'
 END_DATE   = '2024-12-31'
 
 # SuperTrend参数优化范围
-PERIOD_RANGE = np.arange(10, 101, 10)    # [10, 20, 30, 40, 50]
+PERIOD_RANGE = np.arange(10, 101, 10)     # [10, 20, 30, 40, 50]
 MULTIPLIER_RANGE = np.arange(1, 11, 1)    # [2, 3, 4, 5, 6]
 
 # NSGA2算法参数
@@ -41,47 +41,112 @@ engine = create_engine(get_pg_connection_string(config))
 # 禁用PyMoo的编译警告
 Config.warnings['not_compiled'] = False
 
-# Heikin-Ashi数据生成
+# 准备Heikin-Ashi数据
+def prepare_heikin_ashi_data(df):
+    """计算Heikin-Ashi数据并返回更新后的DataFrame"""
+    df['trade_time'] = pd.to_datetime(df['trade_time'])
+    df.set_index('trade_time', inplace=True)
+    
+    # 初始化ha_open列
+    df['ha_open'] = df['open']
+    
+    df['ha_close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
+    
+    # 从第二行开始计算ha_open
+    for i in range(1, len(df)):
+        df.iloc[i, df.columns.get_loc('ha_open')] = (df.iloc[i-1, df.columns.get_loc('ha_open')] + 
+                                                    df.iloc[i-1, df.columns.get_loc('ha_close')]) / 2
+    
+    df['ha_high'] = df[['high', 'ha_open', 'ha_close']].max(axis=1)
+    df['ha_low'] = df[['low', 'ha_open', 'ha_close']].min(axis=1)
+    return df
+
+# Heikin-Ashi数据的Data Feed
 class HeikinAshiData(bt.feeds.PandasData):
+    lines = ('ha_open', 'ha_high', 'ha_low', 'ha_close')
     params = (
-        ('datetime', None),
-        ('open', 'ha_open'),
-        ('high', 'ha_high'),
-        ('low', 'ha_low'),
-        ('close', 'ha_close'),
+        ('datetime', None),  # 使用索引作为datetime
+        ('open', 'open'),
+        ('high', 'high'),
+        ('low', 'low'),
+        ('close', 'close'),
         ('volume', 'volume'),
+        ('ha_open', 'ha_open'),
+        ('ha_high', 'ha_high'),
+        ('ha_low', 'ha_low'),
+        ('ha_close', 'ha_close'),
         ('openinterest', None),
     )
 
-# SuperTrend指标
-class SuperTrend(bt.Indicator):
-    lines = ('supertrend', 'upband', 'downband')
-    params = (
-        ('period', 10),
-        ('multiplier', 3),
-    )
+# RMA计算
+class PineRMA(bt.Indicator):
+    lines = ('rma',)
+    params = (('period', 14),)
 
     def __init__(self):
-        self.atr = bt.indicators.ATR(period=self.p.period)
-        hl2 = (self.data.high + self.data.low) / 2
-        self.upband = hl2 + (self.atr * self.p.multiplier)
-        self.downband = hl2 - (self.atr * self.p.multiplier)
-        self.uptrend = True
-        self.l.supertrend = self.upband
+        self.addminperiod(self.p.period)
+        
+    def next(self):
+        if len(self) < self.p.period:
+            self.lines.rma[0] = self.data[0]  # 当数据点还不够时，直接赋值为当前数据
+        else:
+            alpha = 1.0 / self.p.period
+            self.lines.rma[0] = (alpha * self.data[0]) + (1 - alpha) * self.lines.rma[-1]
+
+# Heikin-Ashi SuperTrend指标
+class HeikinAshiSuperTrend(bt.Indicator):
+    lines = ('supertrend', 'direction', 'upperband', 'lowerband', 'hl2')
+    params = (
+        ('factor', 3),
+        ('atr_period', 10),
+    )
+    
+    def __init__(self):
+        # 计算ATR
+        tr = bt.indicators.TR(self.data)
+        self.atr = PineRMA(tr, period=self.p.atr_period)
+        
+        # 初始化方向为1（下降趋势）
+        self.l.direction = bt.LineNum(1)
+        
+        # 存储上一个supertrend值
+        self.prev_supertrend = None
+        self.prev_direction = None
 
     def next(self):
-        curr_close = self.data.close[0]
-        prev_supertrend = self.l.supertrend[-1]
-        curr_upband = self.upband[0]
-        curr_downband = self.downband[0]
-        if self.uptrend:
-            self.l.supertrend[0] = max(curr_downband, prev_supertrend)
-            if curr_close < self.l.supertrend[0]:
-                self.uptrend = False
+        # 计算中间值
+        self.l.hl2[0] = (self.data.ha_high[0] + self.data.ha_low[0]) / 2.0
+        self.l.upperband[0] = self.l.hl2[0] + self.p.factor * self.atr[0]
+        self.l.lowerband[0] = self.l.hl2[0] - self.p.factor * self.atr[0]
+        
+        curr_upperband = self.l.upperband[0]
+        curr_lowerband = self.l.lowerband[0]
+        curr_close = self.data.ha_close[0]
+        
+        if self.prev_supertrend is None:
+            self.l.direction[0] = 1
+            self.l.supertrend[0] = curr_upperband
         else:
-            self.l.supertrend[0] = min(curr_upband, prev_supertrend)
-            if curr_close > self.l.supertrend[0]:
-                self.uptrend = True
+            # 更新supertrend和方向
+            if self.prev_supertrend == self.prev_upperband:
+                if curr_close > curr_upperband:
+                    self.l.direction[0] = -1  # 上升趋势
+                else:
+                    self.l.direction[0] = 1
+            else:
+                if curr_close < curr_lowerband:
+                    self.l.direction[0] = 1  # 下降趋势
+                else:
+                    self.l.direction[0] = -1
+            
+            # 根据方向设置supertrend值
+            self.l.supertrend[0] = curr_lowerband if self.l.direction[0] == -1 else curr_upperband
+        
+        # 保存当前值作为下一次迭代的上一个值
+        self.prev_supertrend = self.l.supertrend[0]
+        self.prev_upperband = curr_upperband
+        self.prev_direction = self.l.direction[0]
+
 
 # 交易策略
 class HeikinAshiSuperTrendStrategy(bt.Strategy):
@@ -91,20 +156,29 @@ class HeikinAshiSuperTrendStrategy(bt.Strategy):
     )
 
     def __init__(self):
-        self.supertrend = SuperTrend(
-            period=self.p.supertrend_period,
-            multiplier=self.p.supertrend_multiplier
+        self.supertrend = HeikinAshiSuperTrend(
+            self.data,
+            factor=self.p.supertrend_multiplier,
+            atr_period=self.p.supertrend_period
         )
-        self.in_position = False
+        self.prev_direction = None
 
     def next(self):
-        if not self.in_position and self.data.close[0] > self.supertrend.supertrend[0]:
-            size = int((self.broker.get_cash() * 0.95) / self.data.close[0])
-            self.buy(size=size)
-            self.in_position = True
-        elif self.in_position and self.data.close[0] < self.supertrend.supertrend[0]:
-            self.close()
-            self.in_position = False
+        if self.prev_direction is None:
+            self.prev_direction = self.supertrend.direction[0]
+            return
+        
+        curr_direction = self.supertrend.direction[0]
+        
+        if self.prev_direction != curr_direction:
+            if curr_direction == -1:  # 由1变为-1，买入信号
+                size = int((self.broker.get_cash() * 0.95) / self.data.close[0])
+                self.buy(size=size)
+            elif curr_direction == 1:  # 由-1变为1，卖出信号
+                self.close()
+        
+        self.prev_direction = curr_direction
+
 
 # 定义多目标优化问题
 class TradingProblem(Problem):
@@ -128,20 +202,20 @@ class TradingProblem(Problem):
         
         # 在初始化时获取数据，避免重复请求
         print('正在获取股票数据...')
-        self.df = get_30m_kline_data('qfq', self.stock_code, self.start_date, self.end_date)
+        self.df = get_30m_kline_data('wfq', self.stock_code, self.start_date, self.end_date)
         self.df = prepare_heikin_ashi_data(self.df)
         
         # 在初始化时获取基准数据
         print('正在获取基准数据...')
         benchmark_sql = """
-        SELECT trade_date, close 
+        SELECT trade_time, close 
         FROM a_index_1day_kline_baostock 
         WHERE ts_code = '000300.SH' 
-        AND trade_date BETWEEN %s AND %s 
-        ORDER BY trade_date
+        AND trade_time BETWEEN %s AND %s 
+        ORDER BY trade_time
         """
         self.benchmark_df = pd.read_sql(benchmark_sql, engine, params=(start_date, end_date))
-        self.benchmark_df.set_index('trade_date', inplace=True)
+        self.benchmark_df.set_index('trade_time', inplace=True)
         self.benchmark_returns = self.benchmark_df['close'].pct_change()
         self.benchmark_returns.index = pd.to_datetime(self.benchmark_returns.index)
         self.benchmark_returns.name = '000300.SH'
@@ -182,16 +256,6 @@ class TradingProblem(Problem):
         
         out["F"] = F
 
-def prepare_heikin_ashi_data(df):
-    """计算Heikin-Ashi数据并返回更新后的DataFrame"""
-    df['ha_close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
-    df['ha_open'] = df['open'].copy()
-    for i in range(1, len(df)):
-        df.loc[df.index[i], 'ha_open'] = (df.loc[df.index[i-1], 'ha_open'] + 
-                                         df.loc[df.index[i-1], 'ha_close']) / 2
-    df['ha_high'] = df[['high', 'ha_open', 'ha_close']].max(axis=1)
-    df['ha_low'] = df[['low', 'ha_open', 'ha_close']].min(axis=1)
-    return df
 
 if __name__ == '__main__':
     # 创建问题实例

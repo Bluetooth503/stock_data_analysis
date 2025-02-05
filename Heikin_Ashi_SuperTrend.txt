@@ -1,0 +1,45 @@
+// RMA
+pine_rma(src, length) =>
+    alpha = 1/length
+    sum = 0.0
+    sum := na(sum[1]) ? ta.sma(src, length) : alpha * src + (1 - alpha) * nz(sum[1])
+
+// ATR
+pine_atr(length) =>
+    trueRange = na(high[1])? high-low : math.max(math.max(high - low, math.abs(high - close[1])), math.abs(low - close[1]))
+    pine_rma(trueRange, length)
+
+// Heikin Ashi SuperTrend
+ha_supertrend(factor, atrPeriod) =>
+    haOpen  = request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, open)
+    haHigh  = request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, high)
+    haLow   = request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, low)
+    haClose = request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, close)
+    atr     = pine_atr(atrPeriod)  // 直接计算原始ATR,保持对真实波动的敏感度
+
+    src = (haHigh + haLow) / 2
+    upperBand = src + factor * atr
+    lowerBand = src - factor * atr
+    prevLowerBand = nz(lowerBand[1])
+    prevUpperBand = nz(upperBand[1])
+
+    lowerBand := lowerBand > prevLowerBand or haClose[1] < prevLowerBand ? lowerBand : prevLowerBand
+    upperBand := upperBand < prevUpperBand or haClose[1] > prevUpperBand ? upperBand : prevUpperBand
+
+    int direction = na
+    float superTrend = na
+    prevSuperTrend = superTrend[1]
+
+    // 方向判断逻辑
+    if na(atr[1])
+        direction := 1
+    else if prevSuperTrend == prevUpperBand
+        direction := haClose > upperBand ? -1 : 1
+    else
+        direction := haClose < lowerBand ? 1 : -1
+
+    superTrend := direction == -1 ? lowerBand : upperBand
+    [superTrend, direction]
+
+
+[supertrend, direction] = ha_supertrend(factor, atrPeriod)
