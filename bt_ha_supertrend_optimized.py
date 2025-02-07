@@ -24,13 +24,13 @@ START_DATE = '2000-01-01'
 END_DATE   = '2024-12-31'
 
 # SuperTrend参数优化范围
-PERIOD_RANGE = np.arange(10, 101, 10)     # [10, 20, 30, 40, 50]
-MULTIPLIER_RANGE = np.arange(1, 11, 1)    # [2, 3, 4, 5, 6]
+PERIOD_RANGE = np.arange(8, 88, 8)     # [ 8, 16, 24, 32, 40, 48, 56, 64, 72, 80]
+MULTIPLIER_RANGE = np.arange(2, 7, 1)  # [2, 3, 4, 5, 6]
 
 # NSGA2算法参数
-POPULATION_SIZE = 10  # 20
-OFFSPRING_SIZE  = 5   # 10
-N_GENERATIONS   = 5   # 10
+POPULATION_SIZE = 20
+OFFSPRING_SIZE = 10
+N_GENERATIONS = 10
 
 #################################
 
@@ -40,6 +40,7 @@ engine = create_engine(get_pg_connection_string(config))
 
 # 禁用PyMoo的编译警告
 Config.warnings['not_compiled'] = False
+
 
 # 准备Heikin-Ashi数据
 def prepare_heikin_ashi_data(df):
@@ -53,92 +54,47 @@ def prepare_heikin_ashi_data(df):
     df['ha_low'] = df[['low', 'ha_open', 'ha_close']].min(axis=1)
     return df
 
-# Heikin-Ashi数据的Data Feed
+# Heikin-Ashi数据生成
 class HeikinAshiData(bt.feeds.PandasData):
-    lines = ('ha_open', 'ha_high', 'ha_low', 'ha_close')
     params = (
-        ('datetime', None),  # 使用索引作为datetime
-        ('open', 'open'),
-        ('high', 'high'),
-        ('low', 'low'),
-        ('close', 'close'),
+        ('datetime', None),
+        ('open', 'ha_open'),
+        ('high', 'ha_high'),
+        ('low', 'ha_low'),
+        ('close', 'ha_close'),
         ('volume', 'volume'),
-        ('ha_open', 'ha_open'),
-        ('ha_high', 'ha_high'),
-        ('ha_low', 'ha_low'),
-        ('ha_close', 'ha_close'),
         ('openinterest', None),
     )
 
-# RMA计算
-class PineRMA(bt.Indicator):
-    lines = ('rma',)
-    params = (('period', 14),)
-
-    def __init__(self):
-        self.addminperiod(self.p.period)
-        
-    def next(self):
-        if len(self) < self.p.period:
-            self.lines.rma[0] = self.data[0]  # 当数据点还不够时，直接赋值为当前数据
-        else:
-            alpha = 1.0 / self.p.period
-            self.lines.rma[0] = (alpha * self.data[0]) + (1 - alpha) * self.lines.rma[-1]
-
-# Heikin-Ashi SuperTrend指标
-class HeikinAshiSuperTrend(bt.Indicator):
-    lines = ('supertrend', 'direction', 'upperband', 'lowerband', 'hl2')
+# SuperTrend指标
+class SuperTrend(bt.Indicator):
+    lines = ('supertrend', 'upband', 'downband')
     params = (
-        ('factor', 3),
-        ('atr_period', 10),
+        ('period', 10),
+        ('multiplier', 3),
     )
-    
+
     def __init__(self):
-        # 计算ATR
-        tr = bt.indicators.TR(self.data)
-        self.atr = PineRMA(tr, period=self.p.atr_period)
-        
-        # 初始化方向为1（下降趋势）
-        self.l.direction = bt.LineNum(1)
-        
-        # 存储上一个supertrend值
-        self.prev_supertrend = None
-        self.prev_direction = None
+        self.atr = bt.indicators.ATR(period=self.p.period)
+        hl2 = (self.data.high + self.data.low) / 2
+        self.upband = hl2 + (self.atr * self.p.multiplier)
+        self.downband = hl2 - (self.atr * self.p.multiplier)
+        self.uptrend = True
+        self.l.supertrend = self.upband
 
     def next(self):
-        # 计算中间值
-        self.l.hl2[0] = (self.data.ha_high[0] + self.data.ha_low[0]) / 2.0
-        self.l.upperband[0] = self.l.hl2[0] + self.p.factor * self.atr[0]
-        self.l.lowerband[0] = self.l.hl2[0] - self.p.factor * self.atr[0]
-        
-        curr_upperband = self.l.upperband[0]
-        curr_lowerband = self.l.lowerband[0]
-        curr_close = self.data.ha_close[0]
-        
-        if self.prev_supertrend is None:
-            self.l.direction[0] = 1
-            self.l.supertrend[0] = curr_upperband
+        curr_close = self.data.close[0]
+        prev_supertrend = self.l.supertrend[-1]
+        curr_upband = self.upband[0]
+        curr_downband = self.downband[0]
+        if self.uptrend:
+            self.l.supertrend[0] = max(curr_downband, prev_supertrend)
+            if curr_close < self.l.supertrend[0]:
+                self.uptrend = False
         else:
-            # 更新supertrend和方向
-            if self.prev_supertrend == self.prev_upperband:
-                if curr_close > curr_upperband:
-                    self.l.direction[0] = -1  # 上升趋势
-                else:
-                    self.l.direction[0] = 1
-            else:
-                if curr_close < curr_lowerband:
-                    self.l.direction[0] = 1  # 下降趋势
-                else:
-                    self.l.direction[0] = -1
-            
-            # 根据方向设置supertrend值
-            self.l.supertrend[0] = curr_lowerband if self.l.direction[0] == -1 else curr_upperband
-        
-        # 保存当前值作为下一次迭代的上一个值
-        self.prev_supertrend = self.l.supertrend[0]
-        self.prev_upperband = curr_upperband
-        self.prev_direction = self.l.direction[0]
-
+            self.l.supertrend[0] = min(curr_upband, prev_supertrend)
+            if curr_close > self.l.supertrend[0]:
+                self.uptrend = True
 
 # 交易策略
 class HeikinAshiSuperTrendStrategy(bt.Strategy):
@@ -148,29 +104,20 @@ class HeikinAshiSuperTrendStrategy(bt.Strategy):
     )
 
     def __init__(self):
-        self.supertrend = HeikinAshiSuperTrend(
-            self.data,
-            factor=self.p.supertrend_multiplier,
-            atr_period=self.p.supertrend_period
+        self.supertrend = SuperTrend(
+            period=self.p.supertrend_period,
+            multiplier=self.p.supertrend_multiplier
         )
-        self.prev_direction = None
+        self.in_position = False
 
     def next(self):
-        if self.prev_direction is None:
-            self.prev_direction = self.supertrend.direction[0]
-            return
-        
-        curr_direction = self.supertrend.direction[0]
-        
-        if self.prev_direction != curr_direction:
-            if curr_direction == -1:  # 由1变为-1，买入信号
-                size = int((self.broker.get_cash() * 0.95) / self.data.close[0])
-                self.buy(size=size)
-            elif curr_direction == 1:  # 由-1变为1，卖出信号
-                self.close()
-        
-        self.prev_direction = curr_direction
-
+        if not self.in_position and self.data.close[0] > self.supertrend.supertrend[0]:
+            size = int((self.broker.get_cash() * 0.95) / self.data.close[0])
+            self.buy(size=size)
+            self.in_position = True
+        elif self.in_position and self.data.close[0] < self.supertrend.supertrend[0]:
+            self.close()
+            self.in_position = False
 
 # 定义多目标优化问题
 class TradingProblem(Problem):
@@ -249,6 +196,7 @@ class TradingProblem(Problem):
         out["F"] = F
 
 
+
 if __name__ == '__main__':
     # 创建问题实例
     problem = TradingProblem(STOCK_CODE, START_DATE, END_DATE)
@@ -310,7 +258,18 @@ if __name__ == '__main__':
                        supertrend_period=best_params['supertrend_period'],
                        supertrend_multiplier=best_params['supertrend_multiplier'])
     cerebro.addanalyzer(bt.analyzers.TimeReturn, _name='timereturn')
+
+    # 设置图表样式
+    cerebro.addobserver(bt.observers.Broker)
+    cerebro.addobserver(bt.observers.Trades)
+    cerebro.addobserver(bt.observers.BuySell)
+
     results = cerebro.run()
+
+    # 绘制并保存图表
+    figure = cerebro.plot(style='candlestick', barup='red', bardown='green', volume=True)[0][0]
+    figure.savefig(f'{STOCK_CODE}_backtrader_plot.png')
+
     strat = results[0]
     returns = pd.Series(strat.analyzers.timereturn.get_analysis())
     
