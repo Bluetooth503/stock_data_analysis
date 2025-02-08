@@ -40,67 +40,38 @@ engine = create_engine(get_pg_connection_string(config))
 Config.warnings['not_compiled'] = False
 
 
-# 准备Heikin-Ashi数据
-def prepare_heikin_ashi_data(df):
-    """
-    计算公式:
-    HA_Close = (Open + High + Low + Close) / 4
-    HA_Open = (前一周期HA_Open + 前一周期HA_Close) / 2
-    HA_High = max(High, HA_Open, HA_Close)
-    HA_Low  = min(Low, HA_Open, HA_Close)
-    """
-    df['trade_time'] = pd.to_datetime(df['trade_time'])
-    df.set_index('trade_time', inplace=True)
-    df['ha_close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
-    df['ha_open'] = (df['open'].shift(1) + df['close'].shift(1)) / 2
-    df['ha_open'].iloc[0] = df['open'].iloc[0]  # 第一行的 ha_open 等于 open
-    df['ha_high'] = df[['high', 'ha_open', 'ha_close']].max(axis=1)
-    df['ha_low'] = df[['low', 'ha_open', 'ha_close']].min(axis=1)
+# 删除原来的prepare_heikin_ashi_data函数，改用新的heikin_ashi函数
+def heikin_ashi(df):
+    df.ta.ha(append=True)
+    ha_ohlc = {"HA_open": "ha_open", "HA_high": "ha_high", "HA_low": "ha_low", "HA_close": "ha_close"}
+    df.rename(columns=ha_ohlc, inplace=True)
     return df
 
-# Heikin-Ashi数据生成
+def supertrend(df, length, multiplier):
+    '''direction=1上涨，-1下跌'''
+    supertrend_df = ta.supertrend(df['ha_high'], df['ha_low'], df['ha_close'], length, multiplier)
+    df['supertrend'] = supertrend_df[f'SUPERT_{length}_{multiplier}.0']
+    df['direction'] = supertrend_df[f'SUPERTd_{length}_{multiplier}.0']
+    return df
+
+# 修改HeikinAshiData类，添加direction列
 class HeikinAshiData(bt.feeds.PandasData):
+    lines = ('direction', 'supertrend',)
+    
+    # 定义每个列的参数
     params = (
-        ('datetime', None),
-        ('open', 'ha_open'),
-        ('high', 'ha_high'),
-        ('low', 'ha_low'),
-        ('close', 'ha_close'),
+        ('datetime', None),  # 使用索引作为datetime
+        ('open', 'open'),
+        ('high', 'high'),
+        ('low', 'low'),
+        ('close', 'close'),
         ('volume', 'volume'),
+        ('direction', 'direction'),
+        ('supertrend', 'supertrend'),
         ('openinterest', None),
     )
 
-# SuperTrend指标
-class SuperTrend(bt.Indicator):
-    lines = ('supertrend', 'upband', 'downband')
-    params = (
-        ('period', 10),
-        ('multiplier', 3),
-    )
-
-    def __init__(self):
-        self.atr = bt.indicators.ATR(period=self.p.period)
-        hl2 = (self.data.high + self.data.low) / 2
-        self.upband = hl2 + (self.atr * self.p.multiplier)
-        self.downband = hl2 - (self.atr * self.p.multiplier)
-        self.uptrend = True
-        self.l.supertrend = self.upband
-
-    def next(self):
-        curr_close = self.data.close[0]
-        prev_supertrend = self.l.supertrend[-1]
-        curr_upband = self.upband[0]
-        curr_downband = self.downband[0]
-        if self.uptrend:
-            self.l.supertrend[0] = max(curr_downband, prev_supertrend)
-            if curr_close < self.l.supertrend[0]:
-                self.uptrend = False
-        else:
-            self.l.supertrend[0] = min(curr_upband, prev_supertrend)
-            if curr_close > self.l.supertrend[0]:
-                self.uptrend = True
-
-# 交易策略
+# 修改交易策略
 class HeikinAshiSuperTrendStrategy(bt.Strategy):
     params = (
         ('supertrend_period', 10),
@@ -108,22 +79,19 @@ class HeikinAshiSuperTrendStrategy(bt.Strategy):
     )
 
     def __init__(self):
-        self.supertrend = SuperTrend(
-            period=self.p.supertrend_period,
-            multiplier=self.p.supertrend_multiplier
-        )
+        self.direction = self.data.lines.direction
         self.in_position = False
 
     def next(self):
-        if not self.in_position and self.data.close[0] > self.supertrend.supertrend[0]:
+        if not self.in_position and self.direction[0] == 1:  # 使用direction信号
             size = int((self.broker.get_cash() * 0.95) / self.data.close[0])
             self.buy(size=size)
             self.in_position = True
-        elif self.in_position and self.data.close[0] < self.supertrend.supertrend[0]:
+        elif self.in_position and self.direction[0] == -1:  # 使用direction信号
             self.close()
             self.in_position = False
 
-# 定义多目标优化问题
+# 修改TradingProblem类中的数据准备部分
 class TradingProblem(Problem):
     def __init__(self, stock_code, start_date, end_date):
         # 先设置参数范围
@@ -141,12 +109,22 @@ class TradingProblem(Problem):
         )
         self.stock_code = stock_code
         self.start_date = start_date
-        self.end_date = end_date
+        self.end_date   = end_date
         
-        # 在初始化时获取数据，避免重复请求
+        # 修改数据准备部分
         print('正在获取股票数据...')
         self.df = get_30m_kline_data('wfq', self.stock_code, self.start_date, self.end_date)
-        self.df = prepare_heikin_ashi_data(self.df)
+        self.df['trade_time'] = pd.to_datetime(self.df['trade_time'])
+        self.df.set_index('trade_time', inplace=True)
+        self.df = heikin_ashi(self.df)
+        
+        # 对每个可能的参数组合预先计算SuperTrend信号
+        self.parameter_data = {}
+        for period in self.period_values:
+            for multiplier in self.multiplier_values:
+                df_copy = self.df.copy()
+                df_copy = supertrend(df_copy, period, multiplier)
+                self.parameter_data[(period, multiplier)] = df_copy
         
         # 在初始化时获取基准数据
         print('正在获取基准数据...')
@@ -158,21 +136,22 @@ class TradingProblem(Problem):
         ORDER BY trade_time
         """
         self.benchmark_df = pd.read_sql(benchmark_sql, engine, params=(start_date, end_date))
+        self.benchmark_df['trade_time'] = pd.to_datetime(self.benchmark_df['trade_time'])
         self.benchmark_df.set_index('trade_time', inplace=True)
         self.benchmark_returns = self.benchmark_df['close'].pct_change()
-        self.benchmark_returns.index = pd.to_datetime(self.benchmark_returns.index)
         self.benchmark_returns.name = '000300.SH'
 
     def _evaluate(self, x, out, *args, **kwargs):
         F = np.zeros((x.shape[0], 2))
         
         for i in range(x.shape[0]):
-            # 从索引获取实际参数值
             period = self.period_values[int(x[i, 0])]
             multiplier = self.multiplier_values[int(x[i, 1])]
             
+            # 使用预先计算好的数据
+            df = self.parameter_data[(period, multiplier)]
             cerebro = bt.Cerebro()
-            data = HeikinAshiData(dataname=self.df)  # 使用已获取的数据
+            data = HeikinAshiData(dataname=df)
             cerebro.adddata(data)
             cerebro.broker.setcash(100000)
             cerebro.broker.setcommission(commission=0.0003)
@@ -254,7 +233,14 @@ if __name__ == '__main__':
     
     # 使用选定的参数进行回测
     cerebro = bt.Cerebro()
-    data = HeikinAshiData(dataname=problem.df)  # 使用已获取的数据
+    
+    # 先计算最优参数的SuperTrend指标
+    final_df = problem.df.copy()
+    final_df = supertrend(final_df, 
+                         best_params['supertrend_period'], 
+                         best_params['supertrend_multiplier'])
+    
+    data = HeikinAshiData(dataname=final_df)  # 使用计算好指标的数据
     cerebro.adddata(data)
     cerebro.broker.setcash(100000)
     cerebro.broker.setcommission(commission=0.0003)
@@ -264,15 +250,15 @@ if __name__ == '__main__':
     cerebro.addanalyzer(bt.analyzers.TimeReturn, _name='timereturn')
 
     # 设置图表样式
-    cerebro.addobserver(bt.observers.Broker)
-    cerebro.addobserver(bt.observers.Trades)
-    cerebro.addobserver(bt.observers.BuySell)
+    # cerebro.addobserver(bt.observers.Broker)
+    # cerebro.addobserver(bt.observers.Trades)
+    # cerebro.addobserver(bt.observers.BuySell)
 
     results = cerebro.run()
 
     # 绘制并保存图表
-    figure = cerebro.plot(style='candlestick', barup='red', bardown='green', volume=True)[0][0]
-    figure.savefig(f'{STOCK_CODE}_backtrader_plot.png')
+    # figure = cerebro.plot(style='candlestick', barup='red', bardown='green', volume=True)[0][0]
+    # figure.savefig(f'{STOCK_CODE}_backtrader_plot.png')
 
     strat = results[0]
     returns = pd.Series(strat.analyzers.timereturn.get_analysis())
@@ -377,4 +363,4 @@ if __name__ == '__main__':
         download_filename=f'{STOCK_CODE}.html',
         title=f'{STOCK_CODE} 策略回测报告 (基准: 沪深300)'
     )
-    print(f'\n已生成业绩报告：{STOCK_CODE}.html') 
+    print(f'\n已生成业绩报告：{STOCK_CODE}.html')
