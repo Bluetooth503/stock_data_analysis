@@ -17,7 +17,7 @@ from pymoo.config import Config
 # 参数设置
 #################################
 # 回测标的和时间范围
-STOCK_CODE = '000858.SZ'
+STOCK_CODE = '603033.SH'
 START_DATE = '2000-01-01'
 END_DATE   = '2024-12-31'
 
@@ -40,7 +40,7 @@ engine = create_engine(get_pg_connection_string(config))
 Config.warnings['not_compiled'] = False
 
 
-# 删除原来的prepare_heikin_ashi_data函数，改用新的heikin_ashi函数
+# 新的heikin_ashi函数
 def heikin_ashi(df):
     df.ta.ha(append=True)
     ha_ohlc = {"HA_open": "ha_open", "HA_high": "ha_high", "HA_low": "ha_low", "HA_close": "ha_close"}
@@ -54,13 +54,11 @@ def supertrend(df, length, multiplier):
     df['direction'] = supertrend_df[f'SUPERTd_{length}_{multiplier}.0']
     return df
 
-# 修改HeikinAshiData类，添加direction列
+# HeikinAshiData类
 class HeikinAshiData(bt.feeds.PandasData):
     lines = ('direction', 'supertrend',)
-    
-    # 定义每个列的参数
     params = (
-        ('datetime', None),  # 使用索引作为datetime
+        ('datetime', None),
         ('open', 'open'),
         ('high', 'high'),
         ('low', 'low'),
@@ -71,7 +69,7 @@ class HeikinAshiData(bt.feeds.PandasData):
         ('openinterest', None),
     )
 
-# 修改交易策略
+# 交易策略
 class HeikinAshiSuperTrendStrategy(bt.Strategy):
     params = (
         ('supertrend_period', 10),
@@ -83,18 +81,16 @@ class HeikinAshiSuperTrendStrategy(bt.Strategy):
         self.in_position = False
 
     def next(self):
-        if not self.in_position and self.direction[0] == 1:  # 使用direction信号
+        if not self.in_position and self.direction[0] == 1:
             size = int((self.broker.get_cash() * 0.95) / self.data.close[0])
             self.buy(size=size)
             self.in_position = True
-        elif self.in_position and self.direction[0] == -1:  # 使用direction信号
+        elif self.in_position and self.direction[0] == -1:
             self.close()
             self.in_position = False
 
-# 修改TradingProblem类中的数据准备部分
 class TradingProblem(Problem):
     def __init__(self, stock_code, start_date, end_date):
-        # 先设置参数范围
         self.period_values = PERIOD_RANGE
         self.multiplier_values = MULTIPLIER_RANGE
         
@@ -111,8 +107,7 @@ class TradingProblem(Problem):
         self.start_date = start_date
         self.end_date   = end_date
         
-        # 修改数据准备部分
-        print('正在获取股票数据...')
+        print(f'正在获取股票数据: {stock_code}')
         self.df = get_30m_kline_data('wfq', self.stock_code, self.start_date, self.end_date)
         self.df['trade_time'] = pd.to_datetime(self.df['trade_time'])
         self.df.set_index('trade_time', inplace=True)
@@ -198,7 +193,7 @@ if __name__ == '__main__':
     termination = get_termination("n_gen", N_GENERATIONS)
     
     # 运行优化
-    print('正在运行多目标参数优化...')
+    print(f'正在运行 {STOCK_CODE} 的多目标参数优化...')
     res = minimize(
         problem,
         algorithm,
@@ -295,47 +290,54 @@ if __name__ == '__main__':
         'stock_code': STOCK_CODE,
         'period': best_params["supertrend_period"],
         'multiplier': best_params["supertrend_multiplier"],
+        # 风险调整收益
+        'sharpe': qs.stats.sharpe(daily_returns),
+        'sortino': qs.stats.sortino(daily_returns),
+        'calmar': qs.stats.calmar(daily_returns),
+        'adjusted_sortino': qs.stats.adjusted_sortino(daily_returns),
+        'gain_to_pain_ratio': qs.stats.gain_to_pain_ratio(daily_returns),
+        'risk_of_ruin': qs.stats.risk_of_ruin(daily_returns),
+        'risk_return_ratio': qs.stats.risk_return_ratio(daily_returns),
+        # 胜率 & 盈亏比
         'win_rate': qs.stats.win_rate(daily_returns) * 100,
+        'profit_factor': qs.stats.profit_factor(daily_returns),
+        'profit_ratio': qs.stats.profit_ratio(daily_returns),
         'win_loss_ratio': qs.stats.win_loss_ratio(daily_returns),
+        'payoff_ratio': qs.stats.payoff_ratio(daily_returns),
+        'consecutive_losses': qs.stats.consecutive_losses(daily_returns),
+        'consecutive_wins': qs.stats.consecutive_wins(daily_returns),
+        # 收益相关指标
         'avg_return': qs.stats.avg_return(daily_returns) * 100,
         'avg_win': qs.stats.avg_win(daily_returns) * 100,
         'avg_loss': qs.stats.avg_loss(daily_returns) * 100,
         'best': qs.stats.best(daily_returns) * 100,
         'worst': qs.stats.worst(daily_returns) * 100,
-        'cagr': qs.stats.cagr(daily_returns) * 100,
-        'calmar': qs.stats.calmar(daily_returns),
-        'common_sense_ratio': qs.stats.common_sense_ratio(daily_returns),
-        'compsum': qs.stats.compsum(daily_returns).iloc[-1] * 100,
-        'consecutive_losses': qs.stats.consecutive_losses(daily_returns),
-        'consecutive_wins': qs.stats.consecutive_wins(daily_returns),
-        'cpc_index': qs.stats.cpc_index(daily_returns),
         'expected_return': qs.stats.expected_return(daily_returns) * 100,
         'expected_shortfall': qs.stats.expected_shortfall(daily_returns),
-        'exposure': qs.stats.exposure(daily_returns) * 100,
-        'gain_to_pain_ratio': qs.stats.gain_to_pain_ratio(daily_returns),
-        'geometric_mean': qs.stats.geometric_mean(daily_returns) * 100,
-        'ghpr': qs.stats.ghpr(daily_returns),
-        'kelly_criterion': qs.stats.kelly_criterion(daily_returns),
-        'kurtosis': qs.stats.kurtosis(daily_returns),
-        'max_drawdown': qs.stats.max_drawdown(daily_returns) * 100,
-        'outlier_loss_ratio': qs.stats.outlier_loss_ratio(daily_returns),
-        'outlier_win_ratio': qs.stats.outlier_win_ratio(daily_returns),
-        'payoff_ratio': qs.stats.payoff_ratio(daily_returns),
-        'profit_factor': qs.stats.profit_factor(daily_returns),
-        'profit_ratio': qs.stats.profit_ratio(daily_returns),
         'rar': qs.stats.rar(daily_returns),
-        'recovery_factor': qs.stats.recovery_factor(daily_returns),
-        'risk_of_ruin': qs.stats.risk_of_ruin(daily_returns),
-        'risk_return_ratio': qs.stats.risk_return_ratio(daily_returns),
-        'sharpe': qs.stats.sharpe(daily_returns),
-        'skew': qs.stats.skew(daily_returns),
-        'sortino': qs.stats.sortino(daily_returns),
-        'adjusted_sortino': qs.stats.adjusted_sortino(daily_returns),
-        'tail_ratio': qs.stats.tail_ratio(daily_returns),
+        # 风险 & 回撤
+        'volatility': qs.stats.volatility(daily_returns) * 100,
+        'max_drawdown': qs.stats.max_drawdown(daily_returns) * 100,
         'ulcer_index': qs.stats.ulcer_index(daily_returns),
         'ulcer_performance_index': qs.stats.ulcer_performance_index(daily_returns),
         'value_at_risk': qs.stats.value_at_risk(daily_returns),
-        'volatility': qs.stats.volatility(daily_returns) * 100,
+        'tail_ratio': qs.stats.tail_ratio(daily_returns),
+        'recovery_factor': qs.stats.recovery_factor(daily_returns),
+        # 年化收益 & 复利相关
+        'cagr': qs.stats.cagr(daily_returns) * 100,
+        'compsum': qs.stats.compsum(daily_returns).iloc[-1] * 100,
+        # 统计指标
+        'skew': qs.stats.skew(daily_returns),
+        'kurtosis': qs.stats.kurtosis(daily_returns),
+        'outlier_loss_ratio': qs.stats.outlier_loss_ratio(daily_returns),
+        'outlier_win_ratio': qs.stats.outlier_win_ratio(daily_returns),
+        'geometric_mean': qs.stats.geometric_mean(daily_returns) * 100,
+        # 组合管理 & 风险衡量
+        'cpc_index': qs.stats.cpc_index(daily_returns),
+        'kelly_criterion': qs.stats.kelly_criterion(daily_returns),
+        'common_sense_ratio': qs.stats.common_sense_ratio(daily_returns),
+        'exposure': qs.stats.exposure(daily_returns) * 100,
+        'ghpr': qs.stats.ghpr(daily_returns),
         # 需要基准数据的指标
         'information_ratio': qs.stats.information_ratio(daily_returns, benchmark_returns),
         'r_squared': qs.stats.r_squared(daily_returns, benchmark_returns)
@@ -344,7 +346,7 @@ if __name__ == '__main__':
     # 将指标保存为DataFrame并输出到CSV
     metrics_df = pd.DataFrame([metrics])
     csv_filename = f'{STOCK_CODE}_metrics.csv'
-    metrics_df.to_csv(csv_filename, index=False)
+    metrics_df.round(3).to_csv(csv_filename, index=False)
     print(f'\n指标已保存到：{csv_filename}')
     
     # 打印主要指标
