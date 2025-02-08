@@ -43,3 +43,6 @@ ha_supertrend(factor, atrPeriod) =>
 
 
 [supertrend, direction] = ha_supertrend(factor, atrPeriod)
+
+entryLongCondition = ta.change(direction) < 0
+exitLongCondition  = ta.change(direction) > 0

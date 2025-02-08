@@ -13,12 +13,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
 plt.rcParams['axes.unicode_minus'] = False    # 用来正常显示负号
+import matplotlib
+matplotlib.use('Agg')  # 强制使用非交互式后端
 import configparser
 from tqdm import tqdm
 from typing import List, Dict
 import sys
-
-
+import talib
+import pandas_ta as ta
 
 
 def convert_to_baostock_code(ts_code: str) -> str:

@@ -16,10 +16,8 @@ from pymoo.config import Config
 #################################
 # 参数设置
 #################################
-# 回测标的
+# 回测标的和时间范围
 STOCK_CODE = '000858.SZ'
-
-# 回测区间
 START_DATE = '2000-01-01'
 END_DATE   = '2024-12-31'
 
@@ -44,7 +42,13 @@ Config.warnings['not_compiled'] = False
 
 # 准备Heikin-Ashi数据
 def prepare_heikin_ashi_data(df):
-    """计算Heikin-Ashi数据并返回更新后的DataFrame"""
+    """
+    计算公式:
+    HA_Close = (Open + High + Low + Close) / 4
+    HA_Open = (前一周期HA_Open + 前一周期HA_Close) / 2
+    HA_High = max(High, HA_Open, HA_Close)
+    HA_Low  = min(Low, HA_Open, HA_Close)
+    """
     df['trade_time'] = pd.to_datetime(df['trade_time'])
     df.set_index('trade_time', inplace=True)
     df['ha_close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
