@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 from common import *
 import baostock as bs
-import time
-logger = setup_logger()  # 初始化日志
 
 
 # 定义初始变量
@@ -69,7 +67,7 @@ def download_30min_kline(ts_code: str, start_date: str, end_date: str) -> pd.Dat
     )
     
     if rs.error_code != '0':
-        logger.error(f"下载 {ts_code} 数据时出错: {rs.error_msg}")
+        print(f"下载 {ts_code} 数据时出错: {rs.error_msg}")
         return pd.DataFrame()
     
     data_list = []
@@ -115,7 +113,7 @@ def main():
     
     # 获取最新记录时间
     latest_time = get_latest_record_time(engine)
-    logger.info(f"数据库最新记录时间: {latest_time}")
+    print(f"数据库最新记录时间: {latest_time}")
     
     # 获取股票列表
     stocks = stock_list['ts_code'].tolist()
@@ -130,12 +128,12 @@ def main():
         if not df.empty:
             all_data.append(df)
         else:
-            logger.warning(f"{ts_code} 没有新数据")
+            print(f"{ts_code} 没有新数据")
     
     # 合并所有数据
     if all_data:
         final_df = pd.concat(all_data, ignore_index=True)
-        logger.info(f"共下载 {len(final_df)} 条记录")
+        print(f"共下载 {len(final_df)} 条记录")
         
         # 使用 upsert_data 保存到数据库
         insert_sql = f"""
@@ -145,7 +143,7 @@ def main():
         """
         
         upsert_data(final_df, table_name, tmp_table, insert_sql, engine)
-        logger.info("数据保存完成")
+        print("数据保存完成")
     
     # 登出 baostock
     bs.logout()

@@ -11,15 +11,16 @@ from pymoo.operators.sampling.rnd import FloatRandomSampling
 from pymoo.operators.crossover.sbx import SBX
 from pymoo.operators.mutation.pm import PM
 from pymoo.config import Config
+from collections import defaultdict
 
 
 #################################
 # 参数设置
 #################################
 # 回测标的和时间范围
-STOCK_CODE = '603033.SH'
+STOCK_CODE = '601127.SH'
 START_DATE = '2000-01-01'
-END_DATE   = '2024-12-31'
+END_DATE   = '2025-02-10'
 
 # SuperTrend参数优化范围
 PERIOD_RANGE = np.arange(8, 88, 8)     # [ 8, 16, 24, 32, 40, 48, 56, 64, 72, 80]
@@ -89,10 +90,42 @@ class HeikinAshiSuperTrendStrategy(bt.Strategy):
             self.close()
             self.in_position = False
 
+# 添加交易记录分析器
+class TradeRecorder(bt.Analyzer):
+    def __init__(self):
+        self.trades = []
+        self.current_trade = None
+
+    def notify_trade(self, trade):
+        if trade.isclosed:
+            # 获取交易的数据
+            data = trade.data
+            # 获取退出时间点的收盘价作为退出价格
+            exit_price = data.close[0]
+            
+            self.trades.append({
+                'entry_date': bt.num2date(trade.dtopen).strftime('%Y-%m-%d %H:%M:%S'),
+                'exit_date': bt.num2date(trade.dtclose).strftime('%Y-%m-%d %H:%M:%S'),
+                'entry_price': trade.price,
+                'exit_price': exit_price,
+                'size': trade.size,
+                'entry_value': abs(trade.value),
+                'exit_value': abs(trade.pnlcomm + trade.value),
+                'pnl': trade.pnlcomm,
+                'return_pct': (trade.pnlcomm / abs(trade.value)) * 100 if trade.value != 0 else 0,
+                'commission': trade.commission
+            })
+
+    def get_trades(self):
+        return self.trades
+
 class TradingProblem(Problem):
     def __init__(self, stock_code, start_date, end_date):
         self.period_values = PERIOD_RANGE
         self.multiplier_values = MULTIPLIER_RANGE
+        
+        # 添加一个列表来存储所有参数的metrics
+        self.all_metrics = []
         
         # 根据参数范围的长度自动设置上下界
         super().__init__(
@@ -162,14 +195,44 @@ class TradingProblem(Problem):
             returns.index = pd.to_datetime(returns.index)
             daily_returns = (1 + returns).groupby(returns.index.date).prod() - 1
             daily_returns.index = pd.to_datetime(daily_returns.index)
+            daily_returns.name = 'SuperTrend'
             
-            # 计算目标值
-            win_rate = qs.stats.win_rate(daily_returns)
-            profit_factor = qs.stats.profit_factor(daily_returns)
+            # 使用已获取的基准数据
+            benchmark_returns = self.benchmark_returns
             
-            # 由于pymoo是最小化问题，所以取负值
-            F[i, 0] = -win_rate
-            F[i, 1] = -profit_factor
+            # 确保两个时间序列的索引对齐
+            aligned_dates = daily_returns.index.intersection(benchmark_returns.index)
+            daily_returns = daily_returns[aligned_dates]
+            benchmark_returns = benchmark_returns[aligned_dates]
+            
+            # 删除任何包含NaN的数据
+            valid_data = ~(daily_returns.isna() | benchmark_returns.isna())
+            daily_returns = daily_returns[valid_data]
+            benchmark_returns = benchmark_returns[valid_data]
+            
+            # 计算当前参数组合的metrics
+            metrics = {
+                'stock_code': self.stock_code,
+                'period': period,
+                'multiplier': multiplier,
+                'sharpe': qs.stats.sharpe(daily_returns),
+                'sortino': qs.stats.sortino(daily_returns),
+                'win_rate': qs.stats.win_rate(daily_returns) * 100,
+                'profit_factor': qs.stats.profit_factor(daily_returns),
+                'max_drawdown': qs.stats.max_drawdown(daily_returns) * 100,
+                'cagr': qs.stats.cagr(daily_returns) * 100,
+                'volatility': qs.stats.volatility(daily_returns) * 100,
+                'calmar': qs.stats.calmar(daily_returns),
+                'information_ratio': qs.stats.information_ratio(daily_returns, benchmark_returns),
+                'r_squared': qs.stats.r_squared(daily_returns, benchmark_returns)
+            }
+            
+            # 将metrics添加到列表中
+            self.all_metrics.append(metrics)
+            
+            # 设置优化目标
+            F[i, 0] = -metrics['win_rate']
+            F[i, 1] = -metrics['profit_factor']
         
         out["F"] = F
 
@@ -201,6 +264,11 @@ if __name__ == '__main__':
         seed=1,
         verbose=True
     )
+    
+    # 保存所有参数的metrics
+    all_metrics_df = pd.DataFrame(problem.all_metrics)
+    all_metrics_df.round(3).to_csv(f'{STOCK_CODE}_all_metrics.csv', index=False)
+    print(f'\n所有参数的metrics已保存到：{STOCK_CODE}_all_metrics.csv')
     
     # 输出结果
     print("\n=== 优化结果 ===")
@@ -235,7 +303,7 @@ if __name__ == '__main__':
                          best_params['supertrend_period'], 
                          best_params['supertrend_multiplier'])
     
-    data = HeikinAshiData(dataname=final_df)  # 使用计算好指标的数据
+    data = HeikinAshiData(dataname=final_df)
     cerebro.adddata(data)
     cerebro.broker.setcash(100000)
     cerebro.broker.setcommission(commission=0.0003)
@@ -243,6 +311,7 @@ if __name__ == '__main__':
                        supertrend_period=best_params['supertrend_period'],
                        supertrend_multiplier=best_params['supertrend_multiplier'])
     cerebro.addanalyzer(bt.analyzers.TimeReturn, _name='timereturn')
+    cerebro.addanalyzer(TradeRecorder, _name='trade_recorder')  # 添加交易记录分析器
 
     # 设置图表样式
     # cerebro.addobserver(bt.observers.Broker)
@@ -366,3 +435,12 @@ if __name__ == '__main__':
         title=f'{STOCK_CODE} 策略回测报告 (基准: 沪深300)'
     )
     print(f'\n已生成业绩报告：{STOCK_CODE}.html')
+
+    # 保存交易记录
+    trade_recorder = strat.analyzers.trade_recorder.get_trades()
+    trades_df = pd.DataFrame(trade_recorder)
+    if not trades_df.empty:
+        trades_df.round(3).to_csv(f'{STOCK_CODE}_trade_record.csv', index=False)
+        print(f'\n交易记录已保存到：{STOCK_CODE}_trade_record.csv')
+    else:
+        print('\n警告：没有交易记录生成')
