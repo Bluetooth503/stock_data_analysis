@@ -21,6 +21,9 @@ from typing import List, Dict
 import sys
 import talib
 import pandas_ta as ta
+import smtplib
+from wxpusher import WxPusher
+
 
 
 def convert_to_baostock_code(ts_code: str) -> str:
@@ -123,11 +126,45 @@ def setup_logger(prefix: str = None) -> logger:
     return logger
 
 
-def upsert_data(df: pd.DataFrame, table_name: str, temp_table: str,insert_sql: str, engine) -> None:
-    """使用临时表进行批量更新"""
+def upsert_data(df: pd.DataFrame, table_name: str, temp_table: str, insert_sql: str, engine) -> None:
+    """
+    使用临时表进行批量更新
+    Args:
+        df: 要导入的数据框
+        table_name: 目标表名
+        temp_table: 临时表名
+        insert_sql: 插入SQL语句
+        engine: SQLAlchemy引擎
+    """
     with engine.begin() as conn:
-        print('开始导入数据到临时表')
-        df.to_sql(temp_table, conn, if_exists='replace', index=False, method='multi', chunksize=100000)
+        if engine.url.drivername.startswith('postgresql'):
+            # 对于PostgreSQL，使用COPY命令进行快速导入
+            from io import StringIO
+            import csv
+            
+            print('开始导入数据到临时表')
+            # 创建临时表结构
+            df.head(0).to_sql(temp_table, conn, if_exists='replace', index=False)
+            
+            # 将整个数据框直接转换为CSV格式
+            output = StringIO()
+            df.to_csv(output, sep='\t', header=False, index=False, quoting=csv.QUOTE_MINIMAL)
+            output.seek(0)
+            
+            # 使用COPY命令一次性导入所有数据
+            cur = conn.connection.cursor()
+            cur.copy_from(output, temp_table, sep='\t', null='')
+            
+        else:
+            # 对于其他数据库，使用分批导入
+            chunk_size = 100000  # 每批处理的行数
+            total_rows = len(df)
+            
+            print('开始导入数据到临时表')
+            for i in tqdm(range(0, total_rows, chunk_size), desc="导入进度"):
+                chunk_df = df.iloc[i:i + chunk_size]
+                chunk_df.to_sql(temp_table, conn, if_exists='append' if i > 0 else 'replace', index=False, method='multi')
+        
         print('从临时表插入数据到目标表')
         conn.execute(text(insert_sql))
         print('DROP临时表')
@@ -147,3 +184,39 @@ def format_time(time_str):
     hour = time_str[8:10]
     minute = time_str[10:12]
     return f"{hour}:{minute}:00"
+
+
+# heikin_ashi函数
+def heikin_ashi(df):
+    df.ta.ha(append=True)
+    ha_ohlc = {"HA_open": "ha_open", "HA_high": "ha_high", "HA_low": "ha_low", "HA_close": "ha_close"}
+    df.rename(columns=ha_ohlc, inplace=True)
+    return df
+
+def supertrend(df, length, multiplier):
+    '''direction=1上涨，-1下跌'''
+    supertrend_df = ta.supertrend(df['ha_high'], df['ha_low'], df['ha_close'], length, multiplier)
+    df['supertrend'] = supertrend_df[f'SUPERT_{length}_{multiplier}.0']
+    df['direction'] = supertrend_df[f'SUPERTd_{length}_{multiplier}.0']
+    return df
+
+
+
+def send_notification(subject, content):
+    """发送微信通知"""
+    try:
+        # 从配置文件获取token和uid
+        config = load_config()
+        token = config.get('wxpusher', 'token')
+        uids = [config.get('wxpusher', 'uid')]
+        
+        # 发送消息
+        WxPusher.send_message(
+            content=f"{subject}\n\n{content}",
+            uids=uids,
+            token=token
+        )
+        logger.info(f"微信通知发送成功: {subject}")
+    except Exception as e:
+        logger.error(f"微信通知发送失败: {str(e)}")
+

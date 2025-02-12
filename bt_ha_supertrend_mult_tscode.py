@@ -347,7 +347,7 @@ def optimize_stock(stock_code):
 def main():
     # 读取股票列表
     try:
-        stock_list_df = pd.read_csv('沪深A股_stock_list.csv', header=None, names=['ts_code']).head(20)
+        stock_list_df = pd.read_csv('上证50_stock_list.csv', header=None, names=['ts_code'])
         stock_codes = stock_list_df['ts_code'].tolist()
         print(f'共读取到 {len(stock_codes)} 只股票')
     except Exception as e:
