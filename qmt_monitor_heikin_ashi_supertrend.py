@@ -3,11 +3,13 @@ from common import *
 from xtquant import xtdata
 from multiprocessing import Pool
 from sqlalchemy import text
+import schedule
 xtdata.enable_hello = False
+import pandas as pd
+pd.set_option('display.unicode.ambiguous_as_wide', True)
+pd.set_option('display.unicode.east_asian_width', True)
+pd.set_option('display.width', 180)
 
-
-# 设置日志
-logger = setup_logger()
 
 # 读取配置文件
 config = load_config()
@@ -62,7 +64,7 @@ def process_stock_data(args):
     stock_data['trade_time'] = pd.to_datetime(stock_data['time'].apply(lambda x: datetime.fromtimestamp(x / 1000.0)))
     stock_data = heikin_ashi(stock_data)
     stock_data = supertrend(stock_data, stock_params['period'], stock_params['multiplier'])
-    print(f"{code}",stock_data[['trade_time','direction']].tail(2))
+    print(f"{code}\n",stock_data[['trade_time','direction']].tail(2).to_string(index=False),"\n")
     
     # 检查信号
     signal = check_signal_change(stock_data, code)
@@ -88,13 +90,36 @@ def process_stock_data(args):
             return (code, signal_type, subject, content)
     return None
 
+def run_market_analysis():
+    """执行市场分析的主函数"""
+    print("开始执行市场分析...")
+    
+    # 获取合成周期数据
+    df = xtdata.get_market_data_ex([], code_list, period='30m', start_time='20240101')
+    
+    # 准备并行处理的参数
+    process_args = []
+    for code in code_list:
+        if code in df:
+            stock_params = top_stocks[top_stocks['ts_code'] == code].iloc[0].to_dict()
+            process_args.append((code, df[code], stock_params))
+    
+    # 并行处理所有股票数据
+    results = pool.map(process_stock_data, process_args)
+    
+    # 处理信号结果
+    for result in results:
+        if result:
+            code, signal_type, subject, content = result
+            print(f"发现{signal_type}信号: {code}")
+            print(content)
 
 if __name__ == "__main__":
     # 获取股票列表
     top_stocks = get_top_stocks()
     code_list = top_stocks['ts_code'].tolist()
     
-    # 订阅行情
+    # 下载基础周期数据
     for code in code_list:
         xtdata.download_history_data(code, period='5m', incrementally=True)
         xtdata.subscribe_quote(code, '5m')
@@ -102,35 +127,22 @@ if __name__ == "__main__":
     # 创建进程池
     pool = Pool(processes=10)
 
+    # 设置定时任务
+    for hour in range(9, 15):   # 9点到15点
+        for minute in [0, 30]:  # 每个小时的00分和30分
+            schedule_time = f"{hour:02d}:{minute:02d}:01"
+            schedule.every().day.at(schedule_time).do(run_market_analysis)
+    
+    # 运行定时任务
     while True:
-        print("开始10s一次的循环")
         now = datetime.now()
         now_time = now.strftime('%H%M%S')
-        # if not '093000' <= now_time < '150000':
-        #     print(f"{now} 非交易时间 循环退出")
-        #     break
-
-        # 获取所有股票的数据
-        df = xtdata.get_market_data_ex([], code_list, period='30m', start_time='20240101')
         
-        # 准备并行处理的参数
-        process_args = []
-        for code in code_list:
-            if code in df:
-                stock_params = top_stocks[top_stocks['ts_code'] == code].iloc[0].to_dict()
-                process_args.append((code, df[code], stock_params))
+        # 只在交易时间内运行
+        if '093000' <= now_time <= '150000':
+            schedule.run_pending()
         
-        # 并行处理所有股票数据
-        results = pool.map(process_stock_data, process_args)
-        
-        # 处理信号结果
-        for result in results:
-            if result:
-                code, signal_type, subject, content = result
-                logger.info(f"发现{signal_type}信号: {code}")
-                print(content)
-        
-        time.sleep(10)
+        time.sleep(1)
 
     pool.close()
     pool.join()
