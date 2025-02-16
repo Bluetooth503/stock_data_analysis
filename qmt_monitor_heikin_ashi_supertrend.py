@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 from common import *
 from xtquant import xtdata
-from multiprocessing import Pool, cpu_count
+from multiprocessing import Pool
+from sqlalchemy import text
 xtdata.enable_hello = False
 
 
@@ -18,7 +19,7 @@ def get_top_stocks():
     SELECT ts_code, period, multiplier, sharpe, sortino, win_rate, profit_factor
     FROM heikin_ashi_supertrend_metrics
     ORDER BY sortino DESC
-    LIMIT 20
+    LIMIT 30
     """
     df = pd.read_sql(query, engine)
     return df
@@ -35,42 +36,58 @@ def check_signal_change(df, code):
         return 'SELL'
     return None
 
+
+def check_if_notified(engine, trade_time, ts_code):
+    """检查是否已经发送过通知"""
+    query = "SELECT EXISTS (SELECT 1 FROM signal_notifications WHERE trade_time = %s AND ts_code = %s)"
+    with engine.connect() as conn:
+        result = conn.execute(text(query), [trade_time, ts_code]).scalar()
+    return result
+
+def add_notification_record(engine, trade_time, ts_code):
+    """添加通知记录"""
+    query = "INSERT INTO signal_notifications (trade_time, ts_code) VALUES (%s, %s) ON CONFLICT (trade_time, ts_code) DO NOTHING"
+    with engine.connect() as conn:
+        conn.execute(text(query), [trade_time, ts_code])
+        conn.commit()
+
 def process_stock_data(args):
     """处理单个股票的数据"""
     code, stock_data, stock_params = args
-    try:
-        print(f"{code} 开始计算Supertrend指标")
+    
+    # 在进程内创建数据库连接
+    config = load_config()
+    engine = create_engine(get_pg_connection_string(config))
+    
+    stock_data['trade_time'] = pd.to_datetime(stock_data['time'].apply(lambda x: datetime.fromtimestamp(x / 1000.0)))
+    stock_data = heikin_ashi(stock_data)
+    stock_data = supertrend(stock_data, stock_params['period'], stock_params['multiplier'])
+    print(f"{code}",stock_data[['trade_time','direction']].tail(2))
+    
+    # 检查信号
+    signal = check_signal_change(stock_data, code)
+    if signal:
+        trade_time = stock_data['trade_time'].iloc[-1]
         
-        # 添加trade_time
-        current_data = stock_data.copy()
-        current_data['trade_time'] = pd.to_datetime(
-            current_data['time'].apply(lambda x: datetime.fromtimestamp(x / 1000.0))
-        )
-        
-        # 计算指标
-        current_data = heikin_ashi(current_data)
-        current_data = supertrend(current_data, stock_params['period'], stock_params['multiplier'])
-        
-        # 检查信号
-        signal = check_signal_change(current_data, code)
-        if signal:
+        # 检查是否已经通知过该组合
+        if not check_if_notified(engine, trade_time, code):
             signal_type = "买入" if signal == "BUY" else "卖出"
-            subject = f"SuperTrend{signal_type}信号 - {code}"
+            subject = f"{code} - {signal_type}信号"
             content = f"""
             信号类型: {signal_type}
             股票代码: {code}
-            信号时间: {current_data['trade_time'].iloc[-1]}
-            当前价格: {current_data['close'].iloc[-1]}
+            信号时间: {trade_time}
+            当前价格: {stock_data['close'].iloc[-1]}
             Sortino比率: {stock_params['sortino']}
             胜率: {stock_params['win_rate']}
             盈亏比: {stock_params['profit_factor']}
             """
+            # 发送通知
+            send_notification(subject, content)
+            add_notification_record(engine, trade_time, code)
             return (code, signal_type, subject, content)
-        
-        return None
-    except Exception as e:
-        logger.error(f"处理股票 {code} 数据时出错: {str(e)}")
-        return None
+    return None
+
 
 if __name__ == "__main__":
     # 获取股票列表
@@ -83,11 +100,10 @@ if __name__ == "__main__":
         xtdata.subscribe_quote(code, '5m')
 
     # 创建进程池
-    num_processes = 10 # min(cpu_count(), len(code_list))  # 进程数不超过股票数
-    pool = Pool(processes=num_processes)
+    pool = Pool(processes=10)
 
     while True:
-        print("开始30s一次的循环")
+        print("开始10s一次的循环")
         now = datetime.now()
         now_time = now.strftime('%H%M%S')
         # if not '093000' <= now_time < '150000':
@@ -114,10 +130,8 @@ if __name__ == "__main__":
                 logger.info(f"发现{signal_type}信号: {code}")
                 print(content)
         
-        time.sleep(30)
+        time.sleep(10)
 
     pool.close()
     pool.join()
     xtdata.run()
-
-
