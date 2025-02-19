@@ -6,7 +6,7 @@ import baostock as bs
 # 定义初始变量
 stock_list = pd.read_csv('沪深A股_stock_list.csv', header=None, names=['ts_code'])
 start_time = '20000101'
-end_time   = datetime.today().strftime('%Y%m%d')
+end_time   = '20250217' # datetime.today().strftime('%Y%m%d')
 period     = '30m'
 table_name = 'a_stock_30m_kline_wfq_baostock'
 tmp_table  = f"temp_{table_name}_{int(time.time())}"

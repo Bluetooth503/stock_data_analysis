@@ -9,6 +9,9 @@ import warnings
 warnings.filterwarnings("ignore") # 屏蔽jupyter的告警显示
 import pandas as pd
 pd.set_option('display.float_format',lambda x:'%.4f' % x)
+pd.set_option('display.unicode.ambiguous_as_wide', True)
+pd.set_option('display.unicode.east_asian_width', True)
+pd.set_option('display.width', 180)
 import numpy as np
 import matplotlib.pyplot as plt
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
@@ -200,7 +203,16 @@ def supertrend(df, length, multiplier):
     df['direction'] = supertrend_df[f'SUPERTd_{length}_{multiplier}.0']
     return df
 
-
+# 隐藏策略思路
+def ha_st(df, length, multiplier):
+    df.ta.ha(append=True)
+    ha_ohlc = {"HA_open": "ha_open", "HA_high": "ha_high", "HA_low": "ha_low", "HA_close": "ha_close"}
+    df.rename(columns=ha_ohlc, inplace=True)
+    '''direction=1上涨，-1下跌'''
+    supertrend_df = ta.supertrend(df['ha_high'], df['ha_low'], df['ha_close'], length, multiplier)
+    df['supertrend'] = supertrend_df[f'SUPERT_{length}_{multiplier}.0']
+    df['direction'] = supertrend_df[f'SUPERTd_{length}_{multiplier}.0']
+    return df 
 
 def send_notification(subject, content):
     """发送微信通知"""

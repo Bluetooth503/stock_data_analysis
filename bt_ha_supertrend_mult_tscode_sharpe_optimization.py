@@ -2,16 +2,9 @@
 from common import *
 import backtrader as bt
 import quantstats_lumi as qs
-from pymoo.core.problem import Problem
-from pymoo.algorithms.moo.nsga2 import NSGA2
-from pymoo.optimize import minimize
-from pymoo.termination import get_termination
-from pymoo.operators.sampling.rnd import FloatRandomSampling
-from pymoo.operators.crossover.sbx import SBX
-from pymoo.operators.mutation.pm import PM
-from pymoo.config import Config
 import multiprocessing as mp
 from functools import partial
+import itertools
 
 
 #################################
@@ -22,13 +15,8 @@ START_DATE = '2000-01-01'
 END_DATE   = '2024-12-31'
 
 # SuperTrend参数优化范围
-PERIOD_RANGE = np.arange(8, 88, 8)     # [ 8, 16, 24, 32, 40, 48, 56, 64, 72, 80]
+PERIOD_RANGE = np.arange(8, 88, 8)     # [8, 16, 24, 32, 40, 48, 56, 64, 72, 80]
 MULTIPLIER_RANGE = np.arange(2, 7, 1)  # [2, 3, 4, 5, 6]
-
-# NSGA2算法参数
-POPULATION_SIZE = 20
-OFFSPRING_SIZE = 10
-N_GENERATIONS = 10
 
 # 并行处理参数
 MAX_PROCESSES = max(1, mp.cpu_count() - 1)  # 保留一个CPU核心
@@ -38,9 +26,6 @@ MAX_PROCESSES = max(1, mp.cpu_count() - 1)  # 保留一个CPU核心
 # 创建数据库连接
 config = load_config()
 engine = create_engine(get_pg_connection_string(config))
-
-# 禁用PyMoo的编译警告
-Config.warnings['not_compiled'] = False
 
 # 新的heikin_ashi函数
 def heikin_ashi(df):
@@ -91,89 +76,96 @@ class HeikinAshiSuperTrendStrategy(bt.Strategy):
             self.close()
             self.in_position = False
 
-class TradingProblem(Problem):
-    def __init__(self, stock_code, start_date, end_date):
-        self.period_values = PERIOD_RANGE
-        self.multiplier_values = MULTIPLIER_RANGE
+def evaluate_parameters(stock_code, period, multiplier, start_date, end_date):
+    """评估单个参数组合的表现"""
+    try:
+        # 获取数据
+        df = get_30m_kline_data('wfq', stock_code, start_date, end_date)
+        df['trade_time'] = pd.to_datetime(df['trade_time'])
+        df.set_index('trade_time', inplace=True)
+        df = heikin_ashi(df)
+        df = supertrend(df, period, multiplier)
         
-        # 根据参数范围的长度自动设置上下界
-        super().__init__(
-            n_var=2,  # 两个变量：period和multiplier
-            n_obj=2,  # 两个目标：胜率和盈亏比
-            n_constr=0,  # 没有约束
-            xl=np.array([0, 0]),  # 下界固定为0
-            xu=np.array([len(self.period_values)-1, len(self.multiplier_values)-1]),  # 上界根据参数范围长度自动设置
-            vtype=np.int32  # 设置变量类型为整数
-        )
-        self.stock_code = stock_code
-        self.start_date = start_date
-        self.end_date   = end_date
+        # 运行回测
+        cerebro = bt.Cerebro()
+        data = HeikinAshiData(dataname=df)
+        cerebro.adddata(data)
+        cerebro.broker.setcash(100000)
+        cerebro.broker.setcommission(commission=0.0003)
+        cerebro.addstrategy(HeikinAshiSuperTrendStrategy,
+                          supertrend_period=period,
+                          supertrend_multiplier=multiplier)
+        cerebro.addanalyzer(bt.analyzers.TimeReturn, _name='timereturn')
         
-        print(f'正在获取股票数据: {stock_code}')
-        self.df = get_30m_kline_data('wfq', self.stock_code, self.start_date, self.end_date)
-        self.df['trade_time'] = pd.to_datetime(self.df['trade_time'])
-        self.df.set_index('trade_time', inplace=True)
-        self.df = heikin_ashi(self.df)
+        results = cerebro.run()
+        strat = results[0]
+        returns = pd.Series(strat.analyzers.timereturn.get_analysis())
         
-        # 对每个可能的参数组合预先计算SuperTrend信号
-        self.parameter_data = {}
-        for period in self.period_values:
-            for multiplier in self.multiplier_values:
-                df_copy = self.df.copy()
-                df_copy = supertrend(df_copy, period, multiplier)
-                self.parameter_data[(period, multiplier)] = df_copy
+        # 将30分钟收益聚合为日度收益
+        returns.index = pd.to_datetime(returns.index)
+        daily_returns = (1 + returns).groupby(returns.index.date).prod() - 1
+        daily_returns.index = pd.to_datetime(daily_returns.index)
         
-        # 在初始化时获取基准数据
-        print('正在获取基准数据...')
-        benchmark_sql = """
-        SELECT trade_time, close 
-        FROM a_index_1day_kline_baostock 
-        WHERE ts_code = '000300.SH' 
-        AND trade_time BETWEEN %s AND %s 
-        ORDER BY trade_time
-        """
-        self.benchmark_df = pd.read_sql(benchmark_sql, engine, params=(start_date, end_date))
-        self.benchmark_df['trade_time'] = pd.to_datetime(self.benchmark_df['trade_time'])
-        self.benchmark_df.set_index('trade_time', inplace=True)
-        self.benchmark_returns = self.benchmark_df['close'].pct_change()
-        self.benchmark_returns.name = '000300.SH'
+        # 计算Sharpe比率
+        sharpe = qs.stats.sharpe(daily_returns, rf=0.0, periods=252, annualize=True)
+        
+        return {
+            'period': period,
+            'multiplier': multiplier,
+            'sharpe': sharpe
+        }
+        
+    except Exception as e:
+        print(f'评估参数 (period={period}, multiplier={multiplier}) 时发生错误: {str(e)}')
+        return None
 
-    def _evaluate(self, x, out, *args, **kwargs):
-        F = np.zeros((x.shape[0], 2))
-        
-        for i in range(x.shape[0]):
-            period = self.period_values[int(x[i, 0])]
-            multiplier = self.multiplier_values[int(x[i, 1])]
-            
-            # 使用预先计算好的数据
-            df = self.parameter_data[(period, multiplier)]
-            cerebro = bt.Cerebro()
-            data = HeikinAshiData(dataname=df)
-            cerebro.adddata(data)
-            cerebro.broker.setcash(100000)
-            cerebro.broker.setcommission(commission=0.0003)
-            cerebro.addstrategy(HeikinAshiSuperTrendStrategy,
-                              supertrend_period=period,
-                              supertrend_multiplier=multiplier)
-            cerebro.addanalyzer(bt.analyzers.TimeReturn, _name='timereturn')
-            results = cerebro.run()
-            strat = results[0]
-            returns = pd.Series(strat.analyzers.timereturn.get_analysis())
-            
-            # 将30分钟收益聚合为日度收益
-            returns.index = pd.to_datetime(returns.index)
-            daily_returns = (1 + returns).groupby(returns.index.date).prod() - 1
-            daily_returns.index = pd.to_datetime(daily_returns.index)
-            
-            # 计算目标值
-            win_rate = qs.stats.win_rate(daily_returns)
-            profit_factor = qs.stats.profit_factor(daily_returns)
-            
-            # 由于pymoo是最小化问题，所以取负值
-            F[i, 0] = -win_rate
-            F[i, 1] = -profit_factor
-        
-        out["F"] = F
+def grid_search(stock_code, param_grid, start_date, end_date):
+    """
+    执行网格搜索来找到最优参数
+    
+    参数:
+    - stock_code: 股票代码
+    - param_grid: 参数网格，包含所有需要搜索的参数组合
+    - start_date: 回测开始日期
+    - end_date: 回测结束日期
+    
+    返回:
+    - best_params: 最优参数组合
+    - best_metrics: 最优参数组合对应的评估指标
+    """
+    print(f'开始网格搜索最优参数 - {stock_code}')
+    print(f'参数空间大小: {len(param_grid)} 种组合')
+    
+    results = []
+    for params in param_grid:
+        result = evaluate_parameters(
+            stock_code=stock_code,
+            period=params[0],
+            multiplier=params[1],
+            start_date=start_date,
+            end_date=end_date
+        )
+        if result is not None:
+            results.append(result)
+            print(f'评估参数: period={params[0]}, multiplier={params[1]}, sharpe={result["sharpe"]:.2f}')
+    
+    if not results:
+        return None, None
+    
+    # 找到最佳参数组合
+    best_result = max(results, key=lambda x: x['sharpe'])
+    best_params = {
+        'supertrend_period': best_result['period'],
+        'supertrend_multiplier': best_result['multiplier']
+    }
+    
+    print('\n=== 网格搜索结果 ===')
+    print(f'最佳参数组合:')
+    print(f'Period: {best_params["supertrend_period"]}')
+    print(f'Multiplier: {best_params["supertrend_multiplier"]}')
+    print(f'Sharpe Ratio: {best_result["sharpe"]:.2f}')
+    
+    return best_params, best_result
 
 def optimize_stock(stock_code):
     """对单个股票进行参数优化"""
@@ -183,51 +175,30 @@ def optimize_stock(stock_code):
         # 创建reports目录（如果不存在）
         os.makedirs('reports', exist_ok=True)
         
-        # 创建问题实例
-        problem = TradingProblem(stock_code, START_DATE, END_DATE)
+        # 生成参数网格
+        param_grid = list(itertools.product(PERIOD_RANGE, MULTIPLIER_RANGE))
         
-        # 创建算法实例，添加采样、交叉和变异操作
-        algorithm = NSGA2(
-            pop_size=POPULATION_SIZE,
-            n_offsprings=OFFSPRING_SIZE,
-            sampling=FloatRandomSampling(),
-            crossover=SBX(prob=0.9, eta=15),
-            mutation=PM(eta=20),
-            eliminate_duplicates=True
+        # 执行网格搜索
+        best_params, best_result = grid_search(
+            stock_code=stock_code,
+            param_grid=param_grid,
+            start_date=START_DATE,
+            end_date=END_DATE
         )
         
-        # 设置终止条件
-        termination = get_termination("n_gen", N_GENERATIONS)
+        if best_params is None:
+            print(f'股票 {stock_code} 没有找到有效的参数组合')
+            return None
         
-        # 运行优化
-        print(f'正在运行 {stock_code} 的多目标参数优化...')
-        res = minimize(
-            problem,
-            algorithm,
-            termination,
-            seed=1,
-            verbose=False
-        )
+        # 使用最佳参数进行最终回测
+        df = get_30m_kline_data('wfq', stock_code, START_DATE, END_DATE)
+        df['trade_time'] = pd.to_datetime(df['trade_time'])
+        df.set_index('trade_time', inplace=True)
+        df = heikin_ashi(df)
+        df = supertrend(df, best_params['supertrend_period'], best_params['supertrend_multiplier'])
         
-        # 选择一个平衡的解进行回测
-        balanced_idx = len(res.X) // 2  # 选择中间的解
-        period_idx = int(res.X[balanced_idx, 0])
-        multiplier_idx = int(res.X[balanced_idx, 1])
-        best_params = {
-            'supertrend_period': problem.period_values[period_idx],
-            'supertrend_multiplier': problem.multiplier_values[multiplier_idx]
-        }
-
-        # 使用选定的参数进行回测
         cerebro = bt.Cerebro()
-
-        # 先计算最优参数的SuperTrend指标
-        final_df = problem.df.copy()
-        final_df = supertrend(final_df, 
-                            best_params['supertrend_period'], 
-                            best_params['supertrend_multiplier'])
-        
-        data = HeikinAshiData(dataname=final_df)  # 使用计算好指标的数据
+        data = HeikinAshiData(dataname=df)
         cerebro.adddata(data)
         cerebro.broker.setcash(100000)
         cerebro.broker.setcommission(commission=0.0003)
@@ -246,9 +217,20 @@ def optimize_stock(stock_code):
         daily_returns.index = pd.to_datetime(daily_returns.index)
         daily_returns.name = 'SuperTrend'
         
-        # 使用已获取的基准数据
-        benchmark_returns = problem.benchmark_returns
-
+        # 获取基准数据
+        benchmark_sql = """
+        SELECT trade_time, close 
+        FROM a_index_1day_kline_baostock 
+        WHERE ts_code = '000300.SH' 
+        AND trade_time BETWEEN %s AND %s 
+        ORDER BY trade_time
+        """
+        benchmark_df = pd.read_sql(benchmark_sql, engine, params=(START_DATE, END_DATE))
+        benchmark_df['trade_time'] = pd.to_datetime(benchmark_df['trade_time'])
+        benchmark_df.set_index('trade_time', inplace=True)
+        benchmark_returns = benchmark_df['close'].pct_change()
+        benchmark_returns.name = '000300.SH'
+        
         # 确保两个时间序列的索引对齐
         aligned_dates = daily_returns.index.intersection(benchmark_returns.index)
         daily_returns = daily_returns[aligned_dates]
@@ -277,11 +259,11 @@ def optimize_stock(stock_code):
             )
             print(f'已生成 {stock_code} 的策略报告: {report_file}')
         except Exception as e:
-            print.error(f'生成 {stock_code} 的策略报告时发生错误: {str(e)}')
+            print(f'生成 {stock_code} 的策略报告时发生错误: {str(e)}')
         
         # 计算指标
         metrics = {
-            'stock_code': stock_code,
+            'ts_code': stock_code,
             'period': best_params["supertrend_period"],
             'multiplier': best_params["supertrend_multiplier"],
             # 风险调整收益
@@ -341,19 +323,22 @@ def optimize_stock(stock_code):
         return metrics
         
     except Exception as e:
-        print.error(f'处理股票 {stock_code} 时发生错误: {str(e)}')
+        print(f'处理股票 {stock_code} 时发生错误: {str(e)}')
         return None
 
 def main():
     # 读取股票列表
     try:
-        stock_list_df = pd.read_csv('上证50_stock_list.csv', header=None, names=['ts_code'])
+        stock_list_df = pd.read_csv('沪深300_stock_list.csv', header=None, names=['ts_code'])
         stock_codes = stock_list_df['ts_code'].tolist()
         print(f'共读取到 {len(stock_codes)} 只股票')
     except Exception as e:
-        print.error(f'读取股票列表时发生错误: {str(e)}')
+        print(f'读取股票列表时发生错误: {str(e)}')
         return
 
+    # 生成所有可能的参数组合
+    param_grid = list(itertools.product(PERIOD_RANGE, MULTIPLIER_RANGE))
+    
     # 创建进程池
     pool = mp.Pool(processes=MAX_PROCESSES)
     
@@ -374,10 +359,10 @@ def main():
             results_df.to_csv('Heikin_Ashi_SuperTrend_Metrics.csv', index=False)
             print(f'结果已保存到 Heikin_Ashi_SuperTrend_Metrics.csv，共处理成功 {len(results)} 只股票')
         else:
-            print.error('没有成功处理任何股票')
+            print('没有成功处理任何股票')
             
     except Exception as e:
-        print.error(f'处理过程中发生错误: {str(e)}')
+        print(f'处理过程中发生错误: {str(e)}')
         pool.close()
         pool.join()
 
