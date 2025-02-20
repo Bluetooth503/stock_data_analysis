@@ -205,14 +205,25 @@ def supertrend(df, length, multiplier):
 
 # 隐藏策略思路
 def ha_st(df, length, multiplier):
-    df.ta.ha(append=True)
-    ha_ohlc = {"HA_open": "ha_open", "HA_high": "ha_high", "HA_low": "ha_low", "HA_close": "ha_close"}
-    df.rename(columns=ha_ohlc, inplace=True)
-    '''direction=1上涨，-1下跌'''
-    supertrend_df = ta.supertrend(df['ha_high'], df['ha_low'], df['ha_close'], length, multiplier)
-    df['supertrend'] = supertrend_df[f'SUPERT_{length}_{multiplier}.0']
-    df['direction'] = supertrend_df[f'SUPERTd_{length}_{multiplier}.0']
-    return df 
+    try:
+        ts_code = df['ts_code'].iloc[0] if 'ts_code' in df.columns else 'Unknown'
+        df.ta.ha(append=True)
+        ha_ohlc = {"HA_open": "ha_open", "HA_high": "ha_high", "HA_low": "ha_low", "HA_close": "ha_close"}
+        df.rename(columns=ha_ohlc, inplace=True)
+        supertrend_df = ta.supertrend(df['ha_high'], df['ha_low'], df['ha_close'], length, multiplier)
+        
+        if supertrend_df is None:
+            logger.error(f"股票{ts_code} Supertrend计算失败: length={length}, multiplier={multiplier}")
+            return None
+            
+        df['supertrend'] = supertrend_df[f'SUPERT_{length}_{multiplier}.0']
+        df['direction'] = supertrend_df[f'SUPERTd_{length}_{multiplier}.0']
+        df = df.round(3)
+        return df
+    except Exception as e:
+        ts_code = df['ts_code'].iloc[0] if 'ts_code' in df.columns else 'Unknown'
+        logger.error(f"股票{ts_code} ha_st计算错误: {str(e)}")
+        return None
 
 def send_notification(subject, content):
     """发送微信通知"""

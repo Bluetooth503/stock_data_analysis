@@ -5,6 +5,7 @@ import quantstats_lumi as qs
 import multiprocessing as mp
 from functools import partial
 import itertools
+from scipy import stats
 
 
 #################################
@@ -106,13 +107,20 @@ def evaluate_parameters(stock_code, period, multiplier, start_date, end_date):
         daily_returns = (1 + returns).groupby(returns.index.date).prod() - 1
         daily_returns.index = pd.to_datetime(daily_returns.index)
         
-        # 计算Sharpe比率
-        sharpe = qs.stats.sharpe(daily_returns, rf=0.0, periods=252, annualize=True)
+        # 计算累积收益率
+        cumulative_returns = (1 + daily_returns).cumprod() - 1
+        
+        # 计算累积收益率的斜率
+        x = np.arange(len(cumulative_returns))
+        slope, _, _, _, _ = stats.linregress(x, cumulative_returns.values)
+        
+        # 年化斜率（假设252个交易日）
+        annualized_slope = slope * 252
         
         return {
             'period': period,
             'multiplier': multiplier,
-            'sharpe': sharpe
+            'slope': annualized_slope
         }
         
     except Exception as e:
@@ -147,13 +155,13 @@ def grid_search(stock_code, param_grid, start_date, end_date):
         )
         if result is not None:
             results.append(result)
-            print(f'评估参数: period={params[0]}, multiplier={params[1]}, sharpe={result["sharpe"]:.2f}')
+            print(f'评估参数: period={params[0]}, multiplier={params[1]}, slope={result["slope"]:.4f}')
     
     if not results:
         return None, None
     
     # 找到最佳参数组合
-    best_result = max(results, key=lambda x: x['sharpe'])
+    best_result = max(results, key=lambda x: x['slope'])
     best_params = {
         'supertrend_period': best_result['period'],
         'supertrend_multiplier': best_result['multiplier']
@@ -163,7 +171,7 @@ def grid_search(stock_code, param_grid, start_date, end_date):
     print(f'最佳参数组合:')
     print(f'Period: {best_params["supertrend_period"]}')
     print(f'Multiplier: {best_params["supertrend_multiplier"]}')
-    print(f'Sharpe Ratio: {best_result["sharpe"]:.2f}')
+    print(f'Slope: {best_result["slope"]:.4f}')
     
     return best_params, best_result
 
@@ -329,7 +337,7 @@ def optimize_stock(stock_code):
 def main():
     # 读取股票列表
     try:
-        stock_list_df = pd.read_csv('沪深300_stock_list.csv', header=None, names=['ts_code'])
+        stock_list_df = pd.read_csv('中证1000_stock_list.csv', header=None, names=['ts_code'])
         stock_codes = stock_list_df['ts_code'].tolist()
         print(f'共读取到 {len(stock_codes)} 只股票')
     except Exception as e:
