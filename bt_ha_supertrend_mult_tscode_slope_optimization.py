@@ -3,9 +3,9 @@ from common import *
 import backtrader as bt
 import quantstats_lumi as qs
 import multiprocessing as mp
-from functools import partial
 import itertools
 from scipy import stats
+
 
 
 #################################
@@ -77,15 +77,18 @@ class HeikinAshiSuperTrendStrategy(bt.Strategy):
             self.close()
             self.in_position = False
 
-def evaluate_parameters(stock_code, period, multiplier, start_date, end_date):
-    """评估单个参数组合的表现"""
-    try:
-        # 获取数据
-        df = get_30m_kline_data('wfq', stock_code, start_date, end_date)
-        df['trade_time'] = pd.to_datetime(df['trade_time'])
-        df.set_index('trade_time', inplace=True)
+class SuperTrendEstimator:
+    def __init__(self, supertrend_period=10, supertrend_multiplier=3):
+        self.supertrend_period = supertrend_period
+        self.supertrend_multiplier = supertrend_multiplier
+        self.slope_ = None
+        self.annualized_slope_ = None
+
+    def evaluate(self, df):
+        """评估一组参数的表现"""
+        df = df.copy()
         df = heikin_ashi(df)
-        df = supertrend(df, period, multiplier)
+        df = supertrend(df, self.supertrend_period, self.supertrend_multiplier)
         
         # 运行回测
         cerebro = bt.Cerebro()
@@ -94,8 +97,8 @@ def evaluate_parameters(stock_code, period, multiplier, start_date, end_date):
         cerebro.broker.setcash(100000)
         cerebro.broker.setcommission(commission=0.0003)
         cerebro.addstrategy(HeikinAshiSuperTrendStrategy,
-                          supertrend_period=period,
-                          supertrend_multiplier=multiplier)
+                          supertrend_period=self.supertrend_period,
+                          supertrend_multiplier=self.supertrend_multiplier)
         cerebro.addanalyzer(bt.analyzers.TimeReturn, _name='timereturn')
         
         results = cerebro.run()
@@ -115,65 +118,10 @@ def evaluate_parameters(stock_code, period, multiplier, start_date, end_date):
         slope, _, _, _, _ = stats.linregress(x, cumulative_returns.values)
         
         # 年化斜率（假设252个交易日）
-        annualized_slope = slope * 252
+        self.slope_ = slope
+        self.annualized_slope_ = slope * 252
         
-        return {
-            'period': period,
-            'multiplier': multiplier,
-            'slope': annualized_slope
-        }
-        
-    except Exception as e:
-        print(f'评估参数 (period={period}, multiplier={multiplier}) 时发生错误: {str(e)}')
-        return None
-
-def grid_search(stock_code, param_grid, start_date, end_date):
-    """
-    执行网格搜索来找到最优参数
-    
-    参数:
-    - stock_code: 股票代码
-    - param_grid: 参数网格，包含所有需要搜索的参数组合
-    - start_date: 回测开始日期
-    - end_date: 回测结束日期
-    
-    返回:
-    - best_params: 最优参数组合
-    - best_metrics: 最优参数组合对应的评估指标
-    """
-    print(f'开始网格搜索最优参数 - {stock_code}')
-    print(f'参数空间大小: {len(param_grid)} 种组合')
-    
-    results = []
-    for params in param_grid:
-        result = evaluate_parameters(
-            stock_code=stock_code,
-            period=params[0],
-            multiplier=params[1],
-            start_date=start_date,
-            end_date=end_date
-        )
-        if result is not None:
-            results.append(result)
-            print(f'评估参数: period={params[0]}, multiplier={params[1]}, slope={result["slope"]:.4f}')
-    
-    if not results:
-        return None, None
-    
-    # 找到最佳参数组合
-    best_result = max(results, key=lambda x: x['slope'])
-    best_params = {
-        'supertrend_period': best_result['period'],
-        'supertrend_multiplier': best_result['multiplier']
-    }
-    
-    print('\n=== 网格搜索结果 ===')
-    print(f'最佳参数组合:')
-    print(f'Period: {best_params["supertrend_period"]}')
-    print(f'Multiplier: {best_params["supertrend_multiplier"]}')
-    print(f'Slope: {best_result["slope"]:.4f}')
-    
-    return best_params, best_result
+        return self.annualized_slope_
 
 def optimize_stock(stock_code):
     """对单个股票进行参数优化"""
@@ -183,25 +131,38 @@ def optimize_stock(stock_code):
         # 创建reports目录（如果不存在）
         os.makedirs('reports', exist_ok=True)
         
-        # 生成参数网格
-        param_grid = list(itertools.product(PERIOD_RANGE, MULTIPLIER_RANGE))
-        
-        # 执行网格搜索
-        best_params, best_result = grid_search(
-            stock_code=stock_code,
-            param_grid=param_grid,
-            start_date=START_DATE,
-            end_date=END_DATE
-        )
-        
-        if best_params is None:
-            print(f'股票 {stock_code} 没有找到有效的参数组合')
-            return None
-        
-        # 使用最佳参数进行最终回测
+        # 获取数据
         df = get_30m_kline_data('wfq', stock_code, START_DATE, END_DATE)
         df['trade_time'] = pd.to_datetime(df['trade_time'])
         df.set_index('trade_time', inplace=True)
+        
+        # 生成所有参数组合
+        param_combinations = list(itertools.product(PERIOD_RANGE, MULTIPLIER_RANGE))
+        
+        # 评估所有参数组合
+        results = []
+        best_score = float('-inf')
+        best_params = None
+        best_estimator = None
+        
+        print(f'开始评估 {len(param_combinations)} 个参数组合')
+        for period, multiplier in param_combinations:
+            estimator = SuperTrendEstimator(period, multiplier)
+            score = estimator.evaluate(df)
+            print(f'评估参数: period={period}, multiplier={multiplier}, score={score:.4f}')
+            
+            if score > best_score:
+                best_score = score
+                best_params = {'supertrend_period': period, 'supertrend_multiplier': multiplier}
+                best_estimator = estimator
+        
+        print(f'\n=== 网格搜索结果 ===')
+        print(f'最佳参数组合:')
+        print(f'Period: {best_params["supertrend_period"]}')
+        print(f'Multiplier: {best_params["supertrend_multiplier"]}')
+        print(f'Score: {best_score:.4f}')
+        
+        # 使用最佳参数进行最终回测
         df = heikin_ashi(df)
         df = supertrend(df, best_params['supertrend_period'], best_params['supertrend_multiplier'])
         
@@ -274,6 +235,8 @@ def optimize_stock(stock_code):
             'ts_code': stock_code,
             'period': best_params["supertrend_period"],
             'multiplier': best_params["supertrend_multiplier"],
+            'slope': best_estimator.slope_,  # 添加斜率
+            'annualized_slope': best_estimator.annualized_slope_,  # 添加年化斜率
             # 风险调整收益
             'sharpe': qs.stats.sharpe(daily_returns, rf=0.0, periods=252, annualize=True),
             'sortino': qs.stats.sortino(daily_returns),
@@ -337,16 +300,26 @@ def optimize_stock(stock_code):
 def main():
     # 读取股票列表
     try:
-        stock_list_df = pd.read_csv('中证1000_stock_list.csv', header=None, names=['ts_code'])
+        # 读取多个指数成分股列表并合并去重
+        stock_list_dfs = []
+        index_files = [
+            '上证50_stock_list.csv',
+            '沪深300_stock_list.csv', 
+            '中证500_stock_list.csv',
+            '中证1000_stock_list.csv'
+        ]
+        
+        for file in index_files:
+            df = pd.read_csv(file, header=None, names=['ts_code'])
+            stock_list_dfs.append(df)
+            
+        stock_list_df = pd.concat(stock_list_dfs).drop_duplicates()
         stock_codes = stock_list_df['ts_code'].tolist()
         print(f'共读取到 {len(stock_codes)} 只股票')
     except Exception as e:
         print(f'读取股票列表时发生错误: {str(e)}')
         return
 
-    # 生成所有可能的参数组合
-    param_grid = list(itertools.product(PERIOD_RANGE, MULTIPLIER_RANGE))
-    
     # 创建进程池
     pool = mp.Pool(processes=MAX_PROCESSES)
     

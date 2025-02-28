@@ -20,11 +20,10 @@ import matplotlib
 matplotlib.use('Agg')  # 强制使用非交互式后端
 import configparser
 from tqdm import tqdm
-from typing import List, Dict
+from typing import Dict, List, Optional
 import sys
 import talib
 import pandas_ta as ta
-import smtplib
 from wxpusher import WxPusher
 
 

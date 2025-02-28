@@ -30,22 +30,16 @@ engine = create_engine(get_pg_connection_string(config), pool_size=10, max_overf
 # ================================= 获取监控标的和持仓标的 =================================
 def get_top_stocks(positions):
     #### 获取持仓标的代码 ####
-    pos_dict = {pos.stock_code: pos.volume for pos in positions}
+    pos_dict = {pos.stock_code: pos.volume for pos in positions if pos.volume > 0}
     position_codes = list(pos_dict.keys())
     
     #### 构建SQL查询 ####
     query = text("""
     SELECT DISTINCT ts_code, period, multiplier, sharpe, sortino, win_rate, profit_factor
-    FROM (
-        SELECT ts_code, period, multiplier, sharpe, sortino, win_rate, profit_factor
-        FROM heikin_ashi_supertrend_metrics
-        WHERE ts_code NOT LIKE '688%' AND ts_code NOT LIKE '30%' 
-        AND (profit_factor >= 1.3 AND win_rate >= 47 AND sharpe >= 1.43)
-        UNION
-        SELECT ts_code, period, multiplier, sharpe, sortino, win_rate, profit_factor
-        FROM heikin_ashi_supertrend_metrics
-        WHERE ts_code = ANY(:position_codes)
-    ) combined_data
+    FROM heikin_ashi_supertrend_metrics
+    WHERE ts_code NOT LIKE '688%' AND (profit_factor >= 1.3 AND win_rate >= 47 AND sharpe >= 1.5)
+    AND ts_code NOT IN ('603392.SH','605358.SH','605011.SH','001270.SZ','601059.SH')
+    ORDER BY sharpe DESC
     """)
 
     #### 执行SQL查询 ####
@@ -155,7 +149,8 @@ def run_market_analysis():
         ### 检查是否已经通知过该组合 ###
         if not check_if_notified(trade_time, code):
             if signal == "BUY":
-                order_volume = 100
+                # 价格大于50元时买100股，否则用5000元除以股价，向下取整到100的整数倍，最低100股
+                order_volume = 100 if current_price > 50 else max(100, int(5000 / current_price) // 100 * 100)
                 seq = xt_trader.order_stock(acc, code, xtconstant.STOCK_BUY, order_volume, xtconstant.FIX_PRICE, current_price, 'strategy:ha_st', '买入')
                 if seq > 0:
                     send_notification(subject, content)
@@ -166,7 +161,11 @@ def run_market_analysis():
             else:
                 for pos in positions_dict:
                     if pos['stock_code'] == code and pos['volume'] > 0:
-                        seq = xt_trader.order_stock(acc, code, xtconstant.STOCK_SELL, pos['volume'], xtconstant.LATEST_PRICE, -1, 'strategy:ha_st', '卖出')
+                        # 获取实时行情数据
+                        tick = xtdata.get_full_tick([code])
+                        # 取买一价为对手价，若买一价为0（跌停），则取最新价，再降低0.5%提高成交概率
+                        sell_price = round((tick[code]["bidPrice"][0] if tick[code]["bidPrice"][0] != 0 else tick[code]["lastPrice"]) * 0.995, 2)
+                        seq = xt_trader.order_stock(acc, code, xtconstant.STOCK_SELL, pos['volume'], xtconstant.FIX_PRICE, sell_price, 'strategy:ha_st', '卖出')
                         if seq > 0:
                             send_notification(subject, content)
                             add_notification_record(trade_time, code, signal, current_price)
