@@ -10,6 +10,7 @@ n_industry = 365   # 分析行业N个交易日净额分位数
 config = load_config()
 token = config.get('tushare', 'token')
 pro = ts.pro_api(token)
+engine = create_engine(get_pg_connection_string(config))
 
 
 # ================================= 获取N日交易日期 =================================
@@ -62,7 +63,10 @@ moneyflow_grouped = moneyflow_merged_df.groupby("ts_code").agg(agg_dict).reset_i
 moneyflow_grouped.columns = ["ts_code", "特大单净流入总和", "大单净流入总和", "中单净流入总和", "小单净流入总和", "市值均值", "量比均值", "换手率均值"]
 
 # ================================= 按流通市值均分5组,并在组内标准化各指标 =================================
-moneyflow_grouped['市值分位'] = pd.qcut(moneyflow_grouped['市值均值'], q=5, labels=False)
+市值分位区间 = pd.qcut(moneyflow_grouped['市值均值'], q=5, labels=False, retbins=True)
+区间边界 = 市值分位区间[1]
+市值区间标签 = [f"{int(区间边界[i]/10000)}-{int(区间边界[i+1]/10000)}亿" for i in range(len(区间边界)-1)]
+moneyflow_grouped['市值分位'] = pd.qcut(moneyflow_grouped['市值均值'], q=5, labels=市值区间标签)
 
 def normalize_group(group):
     group['特大单/流通市值'] = group['特大单净流入总和'] / group['市值均值']
@@ -75,26 +79,31 @@ def normalize_group(group):
     return group
 moneyflow_grouped = moneyflow_grouped.groupby('市值分位').apply(normalize_group)
 
-# ================================= 定义权重并计算综合得分（可调参数） =================================
+# ================================= 定义权重并计算综合得分,并归一化到0-100的范围 =================================
 weights = {
-    '特大单/流通市值_Z': 0.35,  # 主力资金权重最高
+    '特大单/流通市值_Z': 0.30,  # 主力资金权重最高
     '大单/流通市值_Z':   0.25,
-    '中单/流通市值_Z':   0.15,
+    '中单/流通市值_Z':   0.20,
     '小单/流通市值_Z':   0.05,  # 小单噪音多，权重最低
     '换手率均值_Z':      0.10,  # 换手率反映活跃度
     '量比均值_Z':        0.10   # 量比反映成交活跃度
 }
 
-# 计算综合得分
 moneyflow_grouped['综合得分'] = sum(moneyflow_grouped[col] * weight for col, weight in weights.items())
+min_score = moneyflow_grouped['综合得分'].min()
+max_score = moneyflow_grouped['综合得分'].max()
+moneyflow_grouped['综合得分'] = ((moneyflow_grouped['综合得分'] - min_score) / (max_score - min_score) * 100).round(2)
 
 # ================================= 个股按得分排序并输出 =================================
 moneyflow_rank = moneyflow_grouped.sort_values('综合得分', ascending=False).round(2)
 moneyflow_rank['交易日期'] = trade_dates[-1]
-result_columns = ['ts_code', '交易日期', '市值分位', '特大单/流通市值_Z', '大单/流通市值_Z', '中单/流通市值_Z', '小单/流通市值_Z', '换手率均值_Z', '量比均值_Z', '综合得分']
+moneyflow_rank = moneyflow_rank.reset_index(drop=True)  # 重置索引
+moneyflow_rank.insert(0, '排名', range(1, len(moneyflow_rank) + 1))  # 添加排名列
+result_columns = ['交易日期', 'ts_code', '排名', '市值分位', '特大单/流通市值_Z', '大单/流通市值_Z', '中单/流通市值_Z', '小单/流通市值_Z', '换手率均值_Z', '量比均值_Z', '综合得分']
 moneyflow_rank = moneyflow_rank[result_columns]
-
-
+# moneyflow_rank.head(500).to_sql('stock_moneyflow_rank', engine, if_exists='replace', index=False)
+# moneyflow_rank.to_csv('个股资金流向得分.csv', encoding='utf-8-sig', index=False)
+print(moneyflow_rank.head(10))
 
 
 
@@ -123,22 +132,23 @@ if estimated_records > 5000:
 else:
     # 如果总记录数不超过5000，直接获取所有数据
     all_ind_data.append(pro.moneyflow_ind_ths(start_date=start_date, end_date=end_date))
-
-# 合并所有获取的数据
 full_ind_data = pd.concat(all_ind_data, ignore_index=True) if all_ind_data else pd.DataFrame()
 
 # ================================= 获取最新交易日行业资金流向数据(THS)  =================================
 latest_date = max(full_ind_data['trade_date']) if not full_ind_data.empty else None
 latest_data = full_ind_data[full_ind_data['trade_date'] == latest_date] if latest_date else pd.DataFrame()
 
-# 获取过去第3日、第5日和第10日的日期（单日）
+# 获取过去5个交易日的日期（不含当日）
 if not full_ind_data.empty:
     all_dates = sorted(full_ind_data['trade_date'].unique(), reverse=True)
-    past_3d_date = all_dates[2] if len(all_dates) > 2 else None
-    past_5d_date = all_dates[4] if len(all_dates) > 4 else None
-    past_10d_date = all_dates[9] if len(all_dates) > 9 else None
+    # 从第二个日期开始取（跳过当日）
+    tm1_date = all_dates[1] if len(all_dates) > 1 else None  # T-1日
+    tm2_date = all_dates[2] if len(all_dates) > 2 else None  # T-2日
+    tm3_date = all_dates[3] if len(all_dates) > 3 else None  # T-3日
+    tm4_date = all_dates[4] if len(all_dates) > 4 else None  # T-4日
+    tm5_date = all_dates[5] if len(all_dates) > 5 else None  # T-5日
 else:
-    past_3d_date = past_5d_date = past_10d_date = None
+    tm1_date = tm2_date = tm3_date = tm4_date = tm5_date = None
 
 # ================================= 按行业计算net_amount(净买入额)的分位数  =================================
 ind_results = {}
@@ -153,55 +163,38 @@ def calculate_range_for_date(industry_data, date):
     if date_data.empty:
         return "N/A"
     
-    # 获取该日期的净额
     date_net_amount = date_data['net_amount'].values[0]
-    
-    # 获取历史上所有日期的净额
     all_net_amounts = industry_data['net_amount'].tolist()
-    
-    # 计算该日期净额在历史上的分位数
     percentile_rank = sum(amount < date_net_amount for amount in all_net_amounts) / len(all_net_amounts) * 100
-    
-    # 确定净额所处的区间范围
     percentile_bins = list(range(0, 101, 10))
-    range_start = max([p for p in percentile_bins if p <= percentile_rank])
     range_end = min([p for p in percentile_bins if p >= percentile_rank])
-    return f"[{range_start}, {range_end}]"
+    return str(range_end)
 
 # 遍历每个行业
 for industry in latest_data['industry'].unique():
-    # 获取该行业一年内的所有资金流数据
     industry_data = full_ind_data[full_ind_data['industry'] == industry]
-    
-    # 确保有足够的历史数据
     if industry_data.empty:
         continue
         
-    # 获取该行业的板块代码和历史净额数据
     ts_code = industry_data['ts_code'].iloc[0]
     industry_history = industry_data['net_amount'].tolist()
-    
-    # 获取该行业最新交易日的净额
     latest_industry_data = latest_data[latest_data['industry'] == industry]
     if latest_industry_data.empty:
         continue
         
     latest_net_amount = latest_industry_data['net_amount'].values[0]
-    
-    # 计算分位数值和最新净额的分位值
     percentiles = {f'p{p}': np.percentile(industry_history, p) for p in range(10, 101, 10)}
     percentile_rank = sum(amount < latest_net_amount for amount in industry_history) / len(industry_history) * 100
-    
-    # 确定净额所处的区间范围
     percentile_bins = list(range(0, 101, 10))
-    range_start = max([p for p in percentile_bins if p <= percentile_rank])
     range_end = min([p for p in percentile_bins if p >= percentile_rank])
-    percentile_range = f"[{range_start}, {range_end}]"
+    percentile_range = str(range_end)
     
-    # 计算过去第3日、第5日和第10日的资金流向区间
-    past_3d_range = calculate_range_for_date(industry_data, past_3d_date)
-    past_5d_range = calculate_range_for_date(industry_data, past_5d_date)
-    past_10d_range = calculate_range_for_date(industry_data, past_10d_date)
+    # 计算过去5个交易日的资金流向区间（不含当日）
+    tm5_range = calculate_range_for_date(industry_data, tm5_date)
+    tm4_range = calculate_range_for_date(industry_data, tm4_date)
+    tm3_range = calculate_range_for_date(industry_data, tm3_date)
+    tm2_range = calculate_range_for_date(industry_data, tm2_date)
+    tm1_range = calculate_range_for_date(industry_data, tm1_date)
     
     # 存储结果
     ind_results[industry] = {
@@ -210,29 +203,129 @@ for industry in latest_data['industry'].unique():
         'latest_net_amount': latest_net_amount,
         'percentile_rank': percentile_rank,
         'percentile_range': percentile_range,
-        'past_3d_range': past_3d_range,
-        'past_5d_range': past_5d_range,
-        'past_10d_range': past_10d_range,
+        'past_5d_range': tm5_range,
+        'past_4d_range': tm4_range,
+        'past_3d_range': tm3_range,
+        'past_2d_range': tm2_range,
+        'past_1d_range': tm1_range,
         'percentiles': percentiles
     }
 
 # 转换为DataFrame便于展示，使用中文字段名
 ind_rank = pd.DataFrame([
     {
-        '行业': industry,
-        '板块代码': data['ts_code'],
         '交易日期': data['latest_date'],
+        '板块代码': data['ts_code'],
+        '行业': industry,
         '净额(亿元)': data['latest_net_amount'],
         '百分位排名': data['percentile_rank'],
         '所处区间': data['percentile_range'],
-        '过去3日所处区间': data['past_3d_range'],
         '过去5日所处区间': data['past_5d_range'],
-        '过去10日所处区间': data['past_10d_range'],
+        '过去4日所处区间': data['past_4d_range'],
+        '过去3日所处区间': data['past_3d_range'],
+        '过去2日所处区间': data['past_2d_range'],
+        '过去1日所处区间': data['past_1d_range'],
     }
     for industry, data in ind_results.items()
 ])
 
 # 按照分位数排序
 ind_rank = ind_rank.sort_values('百分位排名', ascending=False).round(2)
+ind_rank = ind_rank.reset_index(drop=True)  # 重置索引
+ind_rank.insert(0, '排名', range(1, len(ind_rank) + 1))  # 添加排名列
+# ind_rank.to_csv('行业资金流向得分.csv', encoding='utf-8-sig', index=False)
+# ind_rank.head(10).to_sql('industry_moneyflow_rank', engine, if_exists='replace', index=False)
+print(ind_rank.head(10))
 
+
+
+# ================================= 获取行业和个股的联合排名 =================================
+print("\n================ 行业资金流向TOP3及其成分股资金流向TOP5 ================")
+
+# 获取前3的行业
+top_industries = ind_rank.head(3)
+
+# 查询行业成分股
+industry_members_sql = """
+SELECT DISTINCT i.index_code, i.index_name, i.ts_code, i.ts_name 
+FROM ths_index_members i 
+WHERE i.index_type = '行业指数' 
+AND i.index_code IN ({})
+""".format(','.join([f"'{code}'" for code in top_industries['板块代码']]))
+
+industry_members = pd.read_sql(industry_members_sql, engine)
+
+# 创建结果列表用于存储所有数据
+results = []
+
+# 对每个行业找出其成分股中资金流向排名前5的股票
+for idx, industry in top_industries.iterrows():
+    # 获取该行业的所有成分股
+    industry_stocks = industry_members[industry_members['index_code'] == industry['板块代码']]
+    
+    # 从moneyflow_rank中筛选出该行业的股票并取前5名
+    industry_top_stocks = moneyflow_rank[moneyflow_rank['ts_code'].isin(industry_stocks['ts_code'])].head(5)
+    
+    if not industry_top_stocks.empty:
+        for _, stock in industry_top_stocks.iterrows():
+            stock_name = industry_stocks[industry_stocks['ts_code'] == stock['ts_code']]['ts_name'].iloc[0]
+            results.append({
+                '行业名称': industry['行业'],
+                '行业排名': idx + 1,
+                '净额(亿元)': industry['净额(亿元)'],
+                '所处区间': industry['所处区间'],
+                '股票代码': stock['ts_code'],
+                '股票名称': stock_name,
+                '股票排名': stock['排名'],
+                '交易日期': stock['交易日期'],
+                '个股综合得分': stock['综合得分']
+            })
+
+# 转换为DataFrame并显示结果
+results_df = pd.DataFrame(results)
+print("\n最终筛选结果：")
+print("=" * 100)
+print(results_df.to_string(index=False))
+print("=" * 100)
+
+# 保存结果到数据库
+# results_df.to_sql('industry_stock_top_rank', engine, if_exists='replace', index=False)
+
+# 格式化结果为HTML表格
+html_content = """
+<h3>行业资金流向TOP3及其成分股资金流向TOP5</h3>
+<table border="1" cellspacing="0" cellpadding="5" style="border-collapse: collapse; width: 100%;">
+    <tr style="background-color: #f2f2f2;">
+        <th>行业名称</th>
+        <th>行业排名</th>
+        <th>净额(亿元)</th>
+        <th>所处区间</th>
+        <th>股票代码</th>
+        <th>股票名称</th>
+        <th>股票排名</th>
+        <th>个股综合得分</th>
+    </tr>
+"""
+
+# 添加数据行
+for _, row in results_df.iterrows():
+    html_content += f"""
+    <tr>
+        <td>{row['行业名称']}</td>
+        <td>{row['行业排名']}</td>
+        <td>{row['净额(亿元)']:.2f}</td>
+        <td>{row['所处区间']}</td>
+        <td>{row['股票代码']}</td>
+        <td>{row['股票名称']}</td>
+        <td>{row['股票排名']}</td>
+        <td>{row['个股综合得分']:.2f}</td>
+    </tr>
+    """
+
+html_content += "</table>"
+
+# 发送通知
+today = datetime.now().strftime('%Y-%m-%d')
+subject = f"{today} 行业及个股资金流向分析"
+send_notification_pushplus(subject, html_content)
 

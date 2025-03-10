@@ -2,11 +2,11 @@
 from common import *
 import tushare as ts
 
-
 # ================================= 读取配置文件 =================================
 config = load_config()
 token = config.get('tushare', 'token')
 pro = ts.pro_api(token)
+engine = create_engine(get_pg_connection_string(config))
 
 # ================================= 概念指数,行业指数成分股 =================================
 def get_ths_index_members():
@@ -22,7 +22,7 @@ def get_ths_index_members():
         'ts_code': 'index_code',
         'name': 'index_name',
         'count': 'ts_count',
-        'type': '指数类型'
+        'type': 'index_type'
     })
     
     all_members = []
@@ -30,48 +30,80 @@ def get_ths_index_members():
         print(f"正在获取指数 {row['index_name']} ({row['index_code']}) 的成分股...")
         df_members = pro.ths_member(ts_code=row['index_code'])
         if not df_members.empty:
-            df_members = df_members.rename(columns={'con_code': '成分股代码', 'con_name': '成分股名称'})
-            df_members['指数代码'] = row['index_code']
-            df_members['指数名称'] = row['index_name']
-            df_members['成分股数量'] = row['ts_count']
-            df_members['编制日期'] = row['list_date']
-            df_members['指数类型'] = row['指数类型']
-            df_members = df_members[['指数代码', '指数名称', '指数类型', '成分股数量', '编制日期', '成分股代码', '成分股名称']]
+            df_members = df_members.rename(columns={'ts_code': 'index_code', 'con_code': 'ts_code', 'con_name': 'ts_name'})
+            df_members['index_code'] = row['index_code']
+            df_members['index_name'] = row['index_name']
+            df_members['ts_count'] = row['ts_count']
+            df_members['list_date'] = row['list_date']
+            df_members['index_type'] = row['index_type']
+            df_members = df_members[['index_code', 'index_name', 'index_type', 'ts_count', 'list_date', 'ts_code', 'ts_name']]
             all_members.append(df_members)
     
     # 合并所有数据并保存
     if all_members:
         final_df = pd.concat(all_members, ignore_index=True)
         final_df.to_csv('同花顺概念行业指数成分.csv', encoding='utf-8-sig', index=False)
+        table_name = 'ths_index_members'
+        tmp_table = 'tmp_ths_index_members'
+        insert_sql = f"""
+            INSERT INTO {table_name} (index_code, index_name, index_type, ts_count, list_date, ts_code, ts_name)
+            SELECT index_code, index_name, index_type, ts_count, list_date, ts_code, ts_name
+            FROM {tmp_table} ON CONFLICT (index_code,ts_code) DO UPDATE 
+            SET index_name = EXCLUDED.index_name,
+                index_type = EXCLUDED.index_type,
+                ts_count   = EXCLUDED.ts_count,
+                list_date  = EXCLUDED.list_date,
+                ts_code    = EXCLUDED.ts_code,
+                ts_name    = EXCLUDED.ts_name;
+        """
+        upsert_data(final_df, table_name, tmp_table, insert_sql, engine)
         return final_df
     return None
 
 # ================================= 行业指数成分股聚合 =================================
 def process_industry_index_members(df):
-    industry_df = df[df['指数类型'] == '行业指数'].copy()
+    industry_df = df[df['index_type'] == '行业指数'].copy()
     def aggregate_index_names(group):
-        sorted_group = group.sort_values('编制日期', ascending=False)
+        sorted_group = group.sort_values('list_date', ascending=False)
         return pd.Series({
-            '股票名称': sorted_group['成分股名称'].iloc[0],  # 保持一个成分股名称
-            '行业名称聚合': ','.join(sorted_group['指数名称']),
+            'ts_name': sorted_group['ts_name'].iloc[0],  # 保持一个ts_name
+            'industry_agg': ','.join(sorted_group['index_name']),
         })
     
-    industry_grouped = industry_df.groupby('成分股代码').apply(aggregate_index_names).reset_index().rename(columns={'成分股代码': '股票代码'})
-    industry_grouped.to_csv('同花顺行业指数成分股聚合.csv', encoding='utf-8-sig', index=False)
+    industry_grouped = industry_df.groupby('ts_code').apply(aggregate_index_names).reset_index()
+    table_name = 'ths_ts_code_industry_agg'
+    tmp_table = 'tmp_ths_ts_code_industry_agg'
+    insert_sql = f"""
+        INSERT INTO {table_name} (ts_code, ts_name, industry_agg)
+        SELECT ts_code, ts_name, industry_agg
+        FROM {tmp_table} ON CONFLICT (ts_code) DO UPDATE 
+        SET ts_name = EXCLUDED.ts_name,
+            industry_agg = EXCLUDED.industry_agg;
+    """
+    upsert_data(industry_grouped, table_name, tmp_table, insert_sql, engine)
     return industry_grouped
 
 # ================================= 概念指数成分股聚合 =================================
 def process_concept_index_members(df):
-    concept_df = df[df['指数类型'] == '概念指数'].copy()
+    concept_df = df[df['index_type'] == '概念指数'].copy()
     def aggregate_index_names(group):
-        sorted_group = group.sort_values('编制日期', ascending=False)
+        sorted_group = group.sort_values('list_date', ascending=False)
         return pd.Series({
-            '股票名称': sorted_group['成分股名称'].iloc[0],  # 保持一个成分股名称
-            '概念名称聚合': ','.join(sorted_group['指数名称']),
+            'ts_name': sorted_group['ts_name'].iloc[0],  # 保持一个ts_name
+            'concept_agg': ','.join(sorted_group['index_name']),
         })
     
-    concept_grouped = concept_df.groupby('成分股代码').apply(aggregate_index_names).reset_index().rename(columns={'成分股代码': '股票代码'})
-    concept_grouped.to_csv('同花顺概念指数成分股聚合.csv', encoding='utf-8-sig', index=False)
+    concept_grouped = concept_df.groupby('ts_code').apply(aggregate_index_names).reset_index()
+    table_name = 'ths_ts_code_concept_agg'
+    tmp_table = 'tmp_ths_ts_code_concept_agg'
+    insert_sql = f"""
+        INSERT INTO {table_name} (ts_code, ts_name, concept_agg)
+        SELECT ts_code, ts_name, concept_agg
+        FROM {tmp_table} ON CONFLICT (ts_code) DO UPDATE 
+        SET ts_name     = EXCLUDED.ts_name,
+            concept_agg = EXCLUDED.concept_agg;
+    """
+    upsert_data(concept_grouped, table_name, tmp_table, insert_sql, engine)
     return concept_grouped
 
 if __name__ == "__main__":

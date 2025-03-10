@@ -25,6 +25,7 @@ import sys
 import talib
 import pandas_ta as ta
 from wxpusher import WxPusher
+import requests
 
 
 
@@ -239,3 +240,39 @@ def send_notification(subject, content):
         logger.info(f"微信通知发送成功: {subject}")
     except Exception as e:
         logger.error(f"微信通知发送失败: {str(e)}")
+
+
+def send_notification_pushplus(subject, content):
+    """使用PushPlus发送微信通知"""
+    try:
+        # 从配置文件获取token
+        config = load_config()
+        token = config.get('pushplus', 'token')
+        url = "http://www.pushplus.plus/send"
+        
+        # 准备请求数据
+        data = {
+            "token": token,
+            "title": subject,
+            "content": content,
+            "template": "html"  # 可选：html, json, markdown, cloudMonitor
+        }
+        
+        # 发送请求
+        response = requests.post(url, json=data)
+        
+        # 检查响应
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('code') == 200:
+                logger.info(f"微信通知发送成功: {subject}")
+                return True
+            else:
+                logger.error(f"微信通知发送失败: {result.get('msg')}")
+                return False
+        else:
+            logger.error(f"微信通知发送失败，HTTP状态码: {response.status_code}")
+            return False
+    except Exception as e:
+        logger.error(f"微信通知发送失败: {str(e)}")
+        return False
