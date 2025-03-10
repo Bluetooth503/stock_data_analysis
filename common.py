@@ -13,11 +13,11 @@ pd.set_option('display.unicode.ambiguous_as_wide', True)
 pd.set_option('display.unicode.east_asian_width', True)
 pd.set_option('display.width', 180)
 import numpy as np
+import math
 import matplotlib.pyplot as plt
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
 plt.rcParams['axes.unicode_minus'] = False    # 用来正常显示负号
 import matplotlib
-matplotlib.use('Agg')  # 强制使用非交互式后端
 import configparser
 from tqdm import tqdm
 from typing import Dict, List, Optional
@@ -123,8 +123,7 @@ def setup_logger(prefix: str = None) -> logger:
         retention="1 week",  # 保留1周的日志
         encoding="utf-8",
         enqueue=True  # 线程安全
-    )
-    
+    )  
     return logger
 
 
@@ -187,7 +186,6 @@ def format_time(time_str):
     minute = time_str[10:12]
     return f"{hour}:{minute}:00"
 
-
 # heikin_ashi函数
 def heikin_ashi(df):
     df.ta.ha(append=True)
@@ -241,4 +239,3 @@ def send_notification(subject, content):
         logger.info(f"微信通知发送成功: {subject}")
     except Exception as e:
         logger.error(f"微信通知发送失败: {str(e)}")
-

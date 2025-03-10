@@ -124,7 +124,7 @@ def run_market_analysis():
     
     #### 获取最新持仓 ####
     positions = xt_trader.query_stock_positions(acc)
-    positions_dict = [{'stock_code': pos.stock_code,'volume': pos.volume} for pos in positions]
+    positions_dict = {pos.stock_code: pos.volume for pos in positions}
     
     #### 串行处理交易操作 ####
     for result in valid_signals:
@@ -149,8 +149,8 @@ def run_market_analysis():
         ### 检查是否已经通知过该组合 ###
         if not check_if_notified(trade_time, code):
             if signal == "BUY":
-                # 价格大于50元时买100股，否则用5000元除以股价，向下取整到100的整数倍，最低100股
-                order_volume = 100 if current_price > 50 else max(100, int(5000 / current_price) // 100 * 100)
+                price_th = 100  # 买入价格阈值
+                order_volume = 100 if current_price > price_th else max(100, int(price_th * 100 / current_price) // 100 * 100)
                 seq = xt_trader.order_stock(acc, code, xtconstant.STOCK_BUY, order_volume, xtconstant.FIX_PRICE, current_price, 'strategy:ha_st', '买入')
                 if seq > 0:
                     send_notification(subject, content)
@@ -159,20 +159,19 @@ def run_market_analysis():
                 else:
                     print(f"买入委托失败 - 股票: {code}, 错误码: {seq}, 价格: {current_price}, 数量: {order_volume}")
             else:
-                for pos in positions_dict:
-                    if pos['stock_code'] == code and pos['volume'] > 0:
-                        # 获取实时行情数据
-                        tick = xtdata.get_full_tick([code])
-                        # 取买一价为对手价，若买一价为0（跌停），则取最新价，再降低0.5%提高成交概率
-                        sell_price = round((tick[code]["bidPrice"][0] if tick[code]["bidPrice"][0] != 0 else tick[code]["lastPrice"]) * 0.995, 2)
-                        seq = xt_trader.order_stock(acc, code, xtconstant.STOCK_SELL, pos['volume'], xtconstant.FIX_PRICE, sell_price, 'strategy:ha_st', '卖出')
-                        if seq > 0:
-                            send_notification(subject, content)
-                            add_notification_record(trade_time, code, signal, current_price)
-                            print(f"卖出委托成功 - 股票: {code}, 数量: {pos['volume']}")
-                        else:
-                            print(f"卖出委托失败 - 股票: {code}, 错误码: {seq}")
-                        break
+                if code in positions_dict and positions_dict[code] > 0:
+                    # 获取实时行情数据
+                    tick = xtdata.get_full_tick([code])
+                    # 取买一价为对手价，若买一价为0（跌停），则取最新价，再降低0.5%提高成交概率
+                    sell_price = round((tick[code]["bidPrice"][0] if tick[code]["bidPrice"][0] != 0 else tick[code]["lastPrice"]) * 0.995, 2)
+                    seq = xt_trader.order_stock(acc, code, xtconstant.STOCK_SELL, positions_dict[code], xtconstant.FIX_PRICE, sell_price, 'strategy:ha_st', '卖出')
+                    if seq > 0:
+                        send_notification(subject, content)
+                        add_notification_record(trade_time, code, signal, current_price)
+                        print(f"卖出委托成功 - 股票: {code}, 数量: {positions_dict[code]}")
+                    else:
+                        print(f"卖出委托失败 - 股票: {code}, 错误码: {seq}")
+
 
 if __name__ == "__main__":
     #### 在主进程中初始化交易接口 ####
@@ -190,7 +189,7 @@ if __name__ == "__main__":
         print(f"订阅{code}的5分钟数据成功")
 
     #### 设置定时任务 ####
-    for hour in range(9, 15):   # 9点到15点
+    for hour in range(9, 16):   # 9点到15点
         for minute in [0, 30]:  # 每个小时的00分和30分
             schedule_time = f"{hour:02d}:{minute:02d}:01"
             schedule.every().day.at(schedule_time).do(run_market_analysis)
