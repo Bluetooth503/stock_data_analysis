@@ -63,19 +63,48 @@ moneyflow_grouped = moneyflow_merged_df.groupby("ts_code").agg(agg_dict).reset_i
 moneyflow_grouped.columns = ["ts_code", "特大单净流入总和", "大单净流入总和", "中单净流入总和", "小单净流入总和", "市值均值", "量比均值", "换手率均值"]
 
 # ================================= 按流通市值均分5组,并在组内标准化各指标 =================================
-市值分位区间 = pd.qcut(moneyflow_grouped['市值均值'], q=5, labels=False, retbins=True)
-区间边界 = 市值分位区间[1]
-市值区间标签 = [f"{int(区间边界[i]/10000)}-{int(区间边界[i+1]/10000)}亿" for i in range(len(区间边界)-1)]
-moneyflow_grouped['市值分位'] = pd.qcut(moneyflow_grouped['市值均值'], q=5, labels=市值区间标签)
+# 定义市值区间边界（单位：亿元）
+市值区间边界 = [0, 20, 50, 100, 500, 1000, 10000, float('inf')]
+市值区间标签 = [
+    '0-20亿', 
+    '20-50亿', 
+    '50-100亿',
+    '100-500亿',
+    '500-1000亿',
+    '1000-10000亿',
+    '10000亿以上'
+]
+
+# 将市值从万元转换为亿元单位进行分组
+moneyflow_grouped['市值(亿)'] = moneyflow_grouped['市值均值'] / 10000
+moneyflow_grouped['市值分位'] = pd.cut(
+    moneyflow_grouped['市值(亿)'], 
+    bins=市值区间边界,
+    labels=市值区间标签,
+    right=False  # 左闭右开区间
+)
 
 def normalize_group(group):
+    if len(group) <= 1:  # 如果分组中只有一个样本，跳过标准化
+        for col in ['特大单/流通市值', '大单/流通市值', '中单/流通市值', '小单/流通市值', '换手率均值', '量比均值']:
+            group[f'{col}_Z'] = 50  # 单个样本赋予中间值
+        return group
+        
     group['特大单/流通市值'] = group['特大单净流入总和'] / group['市值均值']
     group['大单/流通市值']   = group['大单净流入总和']   / group['市值均值']
     group['中单/流通市值']   = group['中单净流入总和']   / group['市值均值']
     group['小单/流通市值']   = group['小单净流入总和']   / group['市值均值']
     # Z-score标准化
     for col in ['特大单/流通市值', '大单/流通市值', '中单/流通市值', '小单/流通市值', '换手率均值', '量比均值']:
+        # 先进行Z-score标准化
         group[f'{col}_Z'] = (group[col] - group[col].mean()) / group[col].std()
+        # 将Z-score转换到0-100范围
+        min_z = group[f'{col}_Z'].min()
+        max_z = group[f'{col}_Z'].max()
+        if min_z != max_z:  # 避免除以零
+            group[f'{col}_Z'] = ((group[f'{col}_Z'] - min_z) / (max_z - min_z) * 100).round(2)
+        else:
+            group[f'{col}_Z'] = 50  # 如果所有值相同，则赋予中间值
     return group
 moneyflow_grouped = moneyflow_grouped.groupby('市值分位').apply(normalize_group)
 
@@ -101,7 +130,7 @@ moneyflow_rank = moneyflow_rank.reset_index(drop=True)  # 重置索引
 moneyflow_rank.insert(0, '排名', range(1, len(moneyflow_rank) + 1))  # 添加排名列
 result_columns = ['交易日期', 'ts_code', '排名', '市值分位', '特大单/流通市值_Z', '大单/流通市值_Z', '中单/流通市值_Z', '小单/流通市值_Z', '换手率均值_Z', '量比均值_Z', '综合得分']
 moneyflow_rank = moneyflow_rank[result_columns]
-# moneyflow_rank.head(500).to_sql('stock_moneyflow_rank', engine, if_exists='replace', index=False)
+moneyflow_rank.to_sql('stock_moneyflow_rank', engine, if_exists='replace', index=False)
 # moneyflow_rank.to_csv('个股资金流向得分.csv', encoding='utf-8-sig', index=False)
 print(moneyflow_rank.head(10))
 
@@ -225,6 +254,13 @@ ind_rank = pd.DataFrame([
         '过去3日所处区间': data['past_3d_range'],
         '过去2日所处区间': data['past_2d_range'],
         '过去1日所处区间': data['past_1d_range'],
+        '过去5日区间均值': pd.Series([
+            float(data['past_5d_range']) if data['past_5d_range'] != 'N/A' else None,
+            float(data['past_4d_range']) if data['past_4d_range'] != 'N/A' else None,
+            float(data['past_3d_range']) if data['past_3d_range'] != 'N/A' else None,
+            float(data['past_2d_range']) if data['past_2d_range'] != 'N/A' else None,
+            float(data['past_1d_range']) if data['past_1d_range'] != 'N/A' else None
+        ]).mean().round(2)
     }
     for industry, data in ind_results.items()
 ])
@@ -234,16 +270,16 @@ ind_rank = ind_rank.sort_values('百分位排名', ascending=False).round(2)
 ind_rank = ind_rank.reset_index(drop=True)  # 重置索引
 ind_rank.insert(0, '排名', range(1, len(ind_rank) + 1))  # 添加排名列
 # ind_rank.to_csv('行业资金流向得分.csv', encoding='utf-8-sig', index=False)
-# ind_rank.head(10).to_sql('industry_moneyflow_rank', engine, if_exists='replace', index=False)
+ind_rank.to_sql('industry_moneyflow_rank', engine, if_exists='replace', index=False)
 print(ind_rank.head(10))
 
 
 
 # ================================= 获取行业和个股的联合排名 =================================
-print("\n================ 行业资金流向TOP3及其成分股资金流向TOP5 ================")
+print("\n================ 行业资金流向TOP10及其成分股资金流向TOP5 ================")
 
-# 获取前3的行业
-top_industries = ind_rank.head(3)
+# 获取前10的行业
+top_industries = ind_rank.head(10)
 
 # 查询行业成分股
 industry_members_sql = """
@@ -270,15 +306,15 @@ for idx, industry in top_industries.iterrows():
         for _, stock in industry_top_stocks.iterrows():
             stock_name = industry_stocks[industry_stocks['ts_code'] == stock['ts_code']]['ts_name'].iloc[0]
             results.append({
+                '交易日期': stock['交易日期'],
                 '行业名称': industry['行业'],
                 '行业排名': idx + 1,
                 '净额(亿元)': industry['净额(亿元)'],
-                '所处区间': industry['所处区间'],
+                '净额所处区间': industry['所处区间'],
                 '股票代码': stock['ts_code'],
                 '股票名称': stock_name,
                 '股票排名': stock['排名'],
-                '交易日期': stock['交易日期'],
-                '个股综合得分': stock['综合得分']
+                '个股资金流综合得分': stock['综合得分']
             })
 
 # 转换为DataFrame并显示结果
@@ -289,7 +325,7 @@ print(results_df.to_string(index=False))
 print("=" * 100)
 
 # 保存结果到数据库
-# results_df.to_sql('industry_stock_top_rank', engine, if_exists='replace', index=False)
+results_df.to_sql('industry_stock_top_rank', engine, if_exists='replace', index=False)
 
 # 格式化结果为HTML表格
 html_content = """
@@ -299,11 +335,11 @@ html_content = """
         <th>行业名称</th>
         <th>行业排名</th>
         <th>净额(亿元)</th>
-        <th>所处区间</th>
+        <th>净额所处区间</th>
         <th>股票代码</th>
         <th>股票名称</th>
         <th>股票排名</th>
-        <th>个股综合得分</th>
+        <th>个股资金流综合得分</th>
     </tr>
 """
 
@@ -314,11 +350,11 @@ for _, row in results_df.iterrows():
         <td>{row['行业名称']}</td>
         <td>{row['行业排名']}</td>
         <td>{row['净额(亿元)']:.2f}</td>
-        <td>{row['所处区间']}</td>
+        <td>{row['净额所处区间']}</td>
         <td>{row['股票代码']}</td>
         <td>{row['股票名称']}</td>
         <td>{row['股票排名']}</td>
-        <td>{row['个股综合得分']:.2f}</td>
+        <td>{row['个股资金流综合得分']:.2f}</td>
     </tr>
     """
 
