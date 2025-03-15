@@ -14,19 +14,19 @@ pd.set_option('display.unicode.east_asian_width', True)
 pd.set_option('display.width', 180)
 import numpy as np
 import math
+from scipy import stats
 import matplotlib.pyplot as plt
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
 plt.rcParams['axes.unicode_minus'] = False    # 用来正常显示负号
 import matplotlib
 import configparser
 from tqdm import tqdm
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Callable
 import sys
 import talib
 import pandas_ta as ta
 from wxpusher import WxPusher
 import requests
-
 
 
 def convert_to_baostock_code(ts_code: str) -> str:
@@ -144,7 +144,7 @@ def upsert_data(df: pd.DataFrame, table_name: str, temp_table: str, insert_sql: 
             from io import StringIO
             import csv
             
-            print('开始导入数据到临时表')
+            logger.info(f'开始导入数据到 {temp_table}')
             # 创建临时表结构
             df.head(0).to_sql(temp_table, conn, if_exists='replace', index=False)
             
@@ -162,15 +162,13 @@ def upsert_data(df: pd.DataFrame, table_name: str, temp_table: str, insert_sql: 
             chunk_size = 100000  # 每批处理的行数
             total_rows = len(df)
             
-            print('开始导入数据到临时表')
             for i in tqdm(range(0, total_rows, chunk_size), desc="导入进度"):
                 chunk_df = df.iloc[i:i + chunk_size]
                 chunk_df.to_sql(temp_table, conn, if_exists='append' if i > 0 else 'replace', index=False, method='multi')
         
-        print('从临时表插入数据到目标表')
         conn.execute(text(insert_sql))
-        print('DROP临时表')
         conn.execute(text(f"DROP TABLE IF EXISTS {temp_table}"))
+
 
 def convert_date_format(date_str: str) -> str:
     """将 YYYYMMDD 格式转换为 YYYY-MM-DD 格式"""
@@ -237,7 +235,7 @@ def send_notification(subject, content):
             uids=uids,
             token=token
         )
-        logger.info(f"微信通知发送成功: {subject}")
+        # logger.info(f"微信通知发送成功: {subject}")
     except Exception as e:
         logger.error(f"微信通知发送失败: {str(e)}")
 
@@ -265,7 +263,7 @@ def send_notification_pushplus(subject, content):
         if response.status_code == 200:
             result = response.json()
             if result.get('code') == 200:
-                logger.info(f"微信通知发送成功: {subject}")
+                # logger.info(f"微信通知发送成功: {subject}")
                 return True
             else:
                 logger.error(f"微信通知发送失败: {result.get('msg')}")
