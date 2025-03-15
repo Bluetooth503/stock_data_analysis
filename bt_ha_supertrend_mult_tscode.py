@@ -3,7 +3,7 @@ from common import *
 import backtrader as bt
 import quantstats_lumi as qs
 from pymoo.core.problem import Problem
-from pymoo.algorithms.moo.nsga2 import NSGA2
+from pymoo.algorithms.soo.nonconvex.ga import GA  # 修改为单目标优化算法
 from pymoo.optimize import minimize
 from pymoo.termination import get_termination
 from pymoo.operators.sampling.rnd import FloatRandomSampling
@@ -12,6 +12,11 @@ from pymoo.operators.mutation.pm import PM
 from pymoo.config import Config
 import multiprocessing as mp
 from functools import partial
+import argparse
+from tqdm import tqdm
+import os
+import pickle
+import time
 
 
 #################################
@@ -22,16 +27,19 @@ START_DATE = '2000-01-01'
 END_DATE   = '2024-12-31'
 
 # SuperTrend参数优化范围
-PERIOD_RANGE = np.arange(8, 88, 8)     # [ 8, 16, 24, 32, 40, 48, 56, 64, 72, 80]
-MULTIPLIER_RANGE = np.arange(2, 7, 1)  # [2, 3, 4, 5, 6]
+PERIOD_RANGE = np.arange(10, 110, 10)     # [ 8, 16, 24, 32, 40, 48, 56, 64, 72, 80]
+MULTIPLIER_RANGE = np.arange(1, 11, 1)    # [2, 3, 4, 5, 6]
 
-# NSGA2算法参数
+# 优化算法参数
 POPULATION_SIZE = 20
-OFFSPRING_SIZE = 10
 N_GENERATIONS = 10
 
 # 并行处理参数
 MAX_PROCESSES = max(1, mp.cpu_count() - 1)  # 保留一个CPU核心
+
+# 缓存设置
+USE_CACHE = True
+CACHE_DIR = 'cache'
 
 #################################
 
@@ -48,6 +56,14 @@ def heikin_ashi(df):
     ha_ohlc = {"HA_open": "ha_open", "HA_high": "ha_high", "HA_low": "ha_low", "HA_close": "ha_close"}
     df.rename(columns=ha_ohlc, inplace=True)
     return df
+
+# 添加一个新函数来处理日度收益计算
+def calculate_daily_returns(returns):
+    """将30分钟收益聚合为日度收益"""
+    returns.index = pd.to_datetime(returns.index)
+    daily_returns = returns.resample('D').apply(lambda x: (1 + x).prod() - 1)
+    daily_returns = daily_returns.dropna()  # 删除空值
+    return daily_returns
 
 def supertrend(df, length, multiplier):
     '''direction=1上涨，-1下跌'''
@@ -99,7 +115,7 @@ class TradingProblem(Problem):
         # 根据参数范围的长度自动设置上下界
         super().__init__(
             n_var=2,  # 两个变量：period和multiplier
-            n_obj=2,  # 两个目标：胜率和盈亏比
+            n_obj=1,  # 单一目标：综合评分
             n_constr=0,  # 没有约束
             xl=np.array([0, 0]),  # 下界固定为0
             xu=np.array([len(self.period_values)-1, len(self.multiplier_values)-1]),  # 上界根据参数范围长度自动设置
@@ -109,10 +125,16 @@ class TradingProblem(Problem):
         self.start_date = start_date
         self.end_date   = end_date
         
-        print(f'正在获取股票数据: {stock_code}')
+        # 获取股票数据
         self.df = get_30m_kline_data('wfq', self.stock_code, self.start_date, self.end_date)
+        if self.df is None or len(self.df) == 0:
+            raise ValueError(f"获取股票 {stock_code} 数据失败")
+            
+        print(f"获取到{stock_code} {len(self.df)} 行数据")        
         self.df['trade_time'] = pd.to_datetime(self.df['trade_time'])
         self.df.set_index('trade_time', inplace=True)
+        
+        # 计算 Heikin Ashi
         self.df = heikin_ashi(self.df)
         
         # 对每个可能的参数组合预先计算SuperTrend信号
@@ -124,7 +146,6 @@ class TradingProblem(Problem):
                 self.parameter_data[(period, multiplier)] = df_copy
         
         # 在初始化时获取基准数据
-        print('正在获取基准数据...')
         benchmark_sql = """
         SELECT trade_time, close 
         FROM a_index_1day_kline_baostock 
@@ -139,47 +160,94 @@ class TradingProblem(Problem):
         self.benchmark_returns.name = '000300.SH'
 
     def _evaluate(self, x, out, *args, **kwargs):
-        F = np.zeros((x.shape[0], 2))
+        F = np.zeros((x.shape[0], 1))  # 修改为单一目标
         
         for i in range(x.shape[0]):
-            period = self.period_values[int(x[i, 0])]
-            multiplier = self.multiplier_values[int(x[i, 1])]
-            
-            # 使用预先计算好的数据
-            df = self.parameter_data[(period, multiplier)]
-            cerebro = bt.Cerebro()
-            data = HeikinAshiData(dataname=df)
-            cerebro.adddata(data)
-            cerebro.broker.setcash(100000)
-            cerebro.broker.setcommission(commission=0.0003)
-            cerebro.addstrategy(HeikinAshiSuperTrendStrategy,
-                              supertrend_period=period,
-                              supertrend_multiplier=multiplier)
-            cerebro.addanalyzer(bt.analyzers.TimeReturn, _name='timereturn')
-            results = cerebro.run()
-            strat = results[0]
-            returns = pd.Series(strat.analyzers.timereturn.get_analysis())
-            
-            # 将30分钟收益聚合为日度收益
-            returns.index = pd.to_datetime(returns.index)
-            daily_returns = (1 + returns).groupby(returns.index.date).prod() - 1
-            daily_returns.index = pd.to_datetime(daily_returns.index)
-            
-            # 计算目标值
-            win_rate = qs.stats.win_rate(daily_returns)
-            profit_factor = qs.stats.profit_factor(daily_returns)
-            
-            # 由于pymoo是最小化问题，所以取负值
-            F[i, 0] = -win_rate
-            F[i, 1] = -profit_factor
+            try:
+                period = self.period_values[int(x[i, 0])]
+                multiplier = self.multiplier_values[int(x[i, 1])]
+                
+                # 使用预先计算好的数据
+                df = self.parameter_data[(period, multiplier)]
+                cerebro = bt.Cerebro()
+                data = HeikinAshiData(dataname=df)
+                cerebro.adddata(data)
+                cerebro.broker.setcash(100000)
+                cerebro.broker.setcommission(commission=0.0003)
+                cerebro.addstrategy(HeikinAshiSuperTrendStrategy,
+                                  supertrend_period=period,
+                                  supertrend_multiplier=multiplier)
+                cerebro.addanalyzer(bt.analyzers.TimeReturn, _name='timereturn')
+                results = cerebro.run()
+                strat = results[0]
+                returns = pd.Series(strat.analyzers.timereturn.get_analysis())
+                
+                # 检查returns是否为空
+                if len(returns) == 0:
+                    F[i, 0] = float('inf')  # 如果没有交易，给予最低分
+                    continue
+                
+                # 使用新函数计算日度收益
+                daily_returns = calculate_daily_returns(returns)
+                daily_returns.name = 'SuperTrend'
+                
+                # 使用已获取的基准数据
+                benchmark_returns = self.benchmark_returns
+                
+                # 确保两个时间序列的索引对齐
+                aligned_dates = daily_returns.index.intersection(benchmark_returns.index)
+                daily_returns = daily_returns[aligned_dates]
+                benchmark_returns = benchmark_returns[aligned_dates]
+                
+                # 删除任何包含NaN的数据
+                valid_data = ~(daily_returns.isna() | benchmark_returns.isna())
+                daily_returns = daily_returns[valid_data]
+                benchmark_returns = benchmark_returns[valid_data]
+                
+                # 确保数据类型一致
+                daily_returns = daily_returns.astype(float)
+                benchmark_returns = benchmark_returns.astype(float)
+                
+                # 计算多个指标
+                sharpe = qs.stats.sharpe(daily_returns)
+                volatility = qs.stats.volatility(daily_returns)
+                max_dd = qs.stats.max_drawdown(daily_returns)
+                sortino = qs.stats.sortino(daily_returns)  # 下行风险调整收益
+                
+                # 计算平滑度相关指标
+                pos_returns = daily_returns > 0
+                consecutive_ups = pos_returns.groupby((pos_returns != pos_returns.shift()).cumsum()).cumcount() + 1
+                avg_up_days = consecutive_ups.mean()
+                
+                # 计算下行波动率
+                downside_returns = daily_returns[daily_returns < 0]
+                downside_vol = np.std(downside_returns) if len(downside_returns) > 0 else 0
+                
+                # 计算上升趋势强度
+                avg_gain = np.mean(daily_returns[daily_returns > 0]) if len(daily_returns[daily_returns > 0]) > 0 else 0
+                avg_loss = abs(np.mean(daily_returns[daily_returns < 0])) if len(daily_returns[daily_returns < 0]) > 0 else float('inf')
+                trend_strength = avg_gain / avg_loss if avg_loss != 0 else float('inf')
+                
+                # 计算综合得分
+                score = (2 * sharpe +
+                        1 * sortino +
+                        1 * avg_up_days +
+                        1 * trend_strength -
+                        2 * max_dd -
+                        1 * volatility -
+                        1 * downside_vol)
+                
+                # 由于pymoo是最小化问题，所以取负值
+                F[i, 0] = -score
+                
+            except Exception as e:
+                F[i, 0] = float('inf')  # 计算出错时给予最低分
         
         out["F"] = F
 
 def optimize_stock(stock_code):
     """对单个股票进行参数优化"""
-    try:
-        print(f'开始处理股票: {stock_code}')
-        
+    try:        
         # 创建reports目录（如果不存在）
         os.makedirs('reports', exist_ok=True)
         
@@ -187,9 +255,8 @@ def optimize_stock(stock_code):
         problem = TradingProblem(stock_code, START_DATE, END_DATE)
         
         # 创建算法实例，添加采样、交叉和变异操作
-        algorithm = NSGA2(
+        algorithm = GA(
             pop_size=POPULATION_SIZE,
-            n_offsprings=OFFSPRING_SIZE,
             sampling=FloatRandomSampling(),
             crossover=SBX(prob=0.9, eta=15),
             mutation=PM(eta=20),
@@ -200,7 +267,7 @@ def optimize_stock(stock_code):
         termination = get_termination("n_gen", N_GENERATIONS)
         
         # 运行优化
-        print(f'正在运行 {stock_code} 的多目标参数优化...')
+        print(f'正在运行 {stock_code} 的单目标参数优化...')
         res = minimize(
             problem,
             algorithm,
@@ -209,15 +276,34 @@ def optimize_stock(stock_code):
             verbose=False
         )
         
-        # 选择一个平衡的解进行回测
-        balanced_idx = len(res.X) // 2  # 选择中间的解
-        period_idx = int(res.X[balanced_idx, 0])
-        multiplier_idx = int(res.X[balanced_idx, 1])
-        best_params = {
-            'supertrend_period': problem.period_values[period_idx],
-            'supertrend_multiplier': problem.multiplier_values[multiplier_idx]
-        }
-
+        # 获取最优解
+        try:
+            # 检查res.X的结构
+            if len(res.X.shape) == 1:  # 一维数组
+                period_idx = int(res.X[0])
+                multiplier_idx = int(res.X[1])
+            else:  # 二维数组
+                best_idx = 0
+                period_idx = int(res.X[best_idx, 0])
+                multiplier_idx = int(res.X[best_idx, 1])
+                
+            best_params = {
+                'supertrend_period': problem.period_values[period_idx],
+                'supertrend_multiplier': problem.multiplier_values[multiplier_idx]
+            }
+            
+            # 获取最优的score值
+            if len(res.F.shape) == 1:  # 一维数组
+                best_score = -res.F[0]
+            else:  # 二维数组
+                best_idx = 0
+                best_score = -res.F[best_idx, 0]
+                
+            print(f"最优参数组合的score值: {best_score:.4f}")
+        except Exception as e:
+            print(f"处理优化结果时出错: {str(e)}")
+            return None
+        
         # 使用选定的参数进行回测
         cerebro = bt.Cerebro()
 
@@ -240,10 +326,8 @@ def optimize_stock(stock_code):
         strat = results[0]
         returns = pd.Series(strat.analyzers.timereturn.get_analysis())
         
-        # 将30分钟收益聚合为日度收益
-        returns.index = pd.to_datetime(returns.index)
-        daily_returns = (1 + returns).groupby(returns.index.date).prod() - 1
-        daily_returns.index = pd.to_datetime(daily_returns.index)
+        # 使用新函数计算日度收益
+        daily_returns = calculate_daily_returns(returns)
         daily_returns.name = 'SuperTrend'
         
         # 使用已获取的基准数据
@@ -277,21 +361,38 @@ def optimize_stock(stock_code):
             )
             print(f'已生成 {stock_code} 的策略报告: {report_file}')
         except Exception as e:
-            print.error(f'生成 {stock_code} 的策略报告时发生错误: {str(e)}')
+            print(f'生成 {stock_code} 的策略报告时发生错误: {str(e)}')
         
         # 计算指标
         metrics = {
             'stock_code': stock_code,
             'period': best_params["supertrend_period"],
             'multiplier': best_params["supertrend_multiplier"],
+            'optimization_score': best_score,  # 添加最优score
+        }
+        
+        # 计算平滑度相关指标
+        pos_returns = daily_returns > 0
+        consecutive_ups = pos_returns.groupby((pos_returns != pos_returns.shift()).cumsum()).cumcount() + 1
+        downside_returns = daily_returns[daily_returns < 0]
+        downside_vol = np.std(downside_returns) if len(downside_returns) > 0 else 0
+        
+        # 计算上升趋势强度
+        avg_gain = np.mean(daily_returns[daily_returns > 0]) if len(daily_returns[daily_returns > 0]) > 0 else 0
+        avg_loss = abs(np.mean(daily_returns[daily_returns < 0])) if len(daily_returns[daily_returns < 0]) > 0 else float('inf')
+        trend_strength = avg_gain / avg_loss if avg_loss != 0 else float('inf')
+        
+        # 添加所有指标
+        metrics.update({
             # 风险调整收益
-            'sharpe': qs.stats.sharpe(daily_returns, rf=0.0, periods=252, annualize=True),
+            'sharpe': qs.stats.sharpe(daily_returns),
             'sortino': qs.stats.sortino(daily_returns),
             'calmar': qs.stats.calmar(daily_returns),
-            'adjusted_sortino': qs.stats.adjusted_sortino(daily_returns),
-            'gain_to_pain_ratio': qs.stats.gain_to_pain_ratio(daily_returns),
-            'risk_of_ruin': qs.stats.risk_of_ruin(daily_returns),
-            'risk_return_ratio': qs.stats.risk_return_ratio(daily_returns),
+            # 平滑度相关指标
+            'avg_up_days': consecutive_ups.mean(),  # 平均连续上涨天数
+            'max_up_days': consecutive_ups.max(),   # 最长连续上涨天数
+            'downside_vol': downside_vol,  # 下行波动率
+            'trend_strength': trend_strength,  # 上涨/下跌比值
             # 胜率 & 盈亏比
             'win_rate': qs.stats.win_rate(daily_returns) * 100,
             'profit_factor': qs.stats.profit_factor(daily_returns),
@@ -334,24 +435,66 @@ def optimize_stock(stock_code):
             'ghpr': qs.stats.ghpr(daily_returns),
             # 需要基准数据的指标
             'information_ratio': qs.stats.information_ratio(daily_returns, benchmark_returns),
-            'r_squared': qs.stats.r_squared(daily_returns, benchmark_returns)
-        }
+            'r_squared': qs.stats.r_squared(daily_returns, benchmark_returns),
+        })
         
         print(f'股票 {stock_code} 处理完成')
         return metrics
         
     except Exception as e:
-        print.error(f'处理股票 {stock_code} 时发生错误: {str(e)}')
+        print(f'处理股票 {stock_code} 时发生错误: {str(e)}')
         return None
 
 def main():
-    # 读取股票列表
+    # 声明全局变量
+    global USE_CACHE, START_DATE, END_DATE, POPULATION_SIZE, N_GENERATIONS, MAX_PROCESSES
+    
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description='Heikin Ashi SuperTrend策略优化')
+    parser.add_argument('--stock', type=str, help='指定单个股票代码进行优化')
+    parser.add_argument('--no-cache', action='store_true', help='禁用缓存')
+    parser.add_argument('--start-date', type=str, default=START_DATE, help=f'回测开始日期 (默认: {START_DATE})')
+    parser.add_argument('--end-date', type=str, default=END_DATE, help=f'回测结束日期 (默认: {END_DATE})')
+    parser.add_argument('--pop-size', type=int, default=POPULATION_SIZE, help=f'遗传算法种群大小 (默认: {POPULATION_SIZE})')
+    parser.add_argument('--generations', type=int, default=N_GENERATIONS, help=f'遗传算法迭代次数 (默认: {N_GENERATIONS})')
+    parser.add_argument('--processes', type=int, default=MAX_PROCESSES, help=f'并行处理的进程数 (默认: {MAX_PROCESSES})')
+    parser.add_argument('--sort-by', type=str, default='sharpe', help='结果排序依据 (默认: sharpe)')
+    args = parser.parse_args()
+    
+    # 更新全局参数
+    if args.no_cache:
+        USE_CACHE = False
+    START_DATE = args.start_date
+    END_DATE = args.end_date
+    POPULATION_SIZE = args.pop_size
+    N_GENERATIONS = args.generations
+    MAX_PROCESSES = args.processes
+    
+    # 创建缓存目录
+    if USE_CACHE and not os.path.exists(CACHE_DIR):
+        os.makedirs(CACHE_DIR)
+    
+    # 创建reports目录
+    if not os.path.exists('reports'):
+        os.makedirs('reports')
+    
+    # 处理单个股票
+    if args.stock:
+        print(f'仅处理股票: {args.stock}')
+        result = optimize_stock(args.stock)
+        if result:
+            results_df = pd.DataFrame([result])
+            results_df.to_csv(f'{args.stock}_Metrics.csv', index=False)
+            print(f'结果已保存到 {args.stock}_Metrics.csv')
+        return
+    
+    # 处理多个股票
     try:
-        stock_list_df = pd.read_csv('上证50_stock_list.csv', header=None, names=['ts_code'])
+        stock_list_df = pd.read_csv('沪深A股_stock_list.csv', header=None, names=['ts_code'])
         stock_codes = stock_list_df['ts_code'].tolist()
         print(f'共读取到 {len(stock_codes)} 只股票')
     except Exception as e:
-        print.error(f'读取股票列表时发生错误: {str(e)}')
+        print(f'读取股票列表时发生错误: {str(e)}')
         return
 
     # 创建进程池
@@ -360,9 +503,19 @@ def main():
     try:
         # 并行处理所有股票
         results = []
-        for result in pool.imap_unordered(optimize_stock, stock_codes):
-            if result is not None:
-                results.append(result)
+        
+        # 使用tqdm显示进度条
+        with tqdm(total=len(stock_codes), desc="处理进度") as pbar:
+            for result in pool.imap_unordered(optimize_stock, stock_codes):
+                pbar.update(1)
+                if result is not None:
+                    results.append(result)
+                    # 显示当前处理的股票结果
+                    pbar.set_postfix(
+                        stock=result['stock_code'], 
+                        sharpe=f"{result['sharpe']:.2f}", 
+                        max_dd=f"{result['max_drawdown']:.2f}%"
+                    )
                 
         # 关闭进程池
         pool.close()
@@ -371,13 +524,25 @@ def main():
         # 将结果保存到CSV
         if results:
             results_df = pd.DataFrame(results)
+            
+            # 按指定字段排序
+            if args.sort_by in results_df.columns:
+                results_df = results_df.sort_values(by=args.sort_by, ascending=False)
+                print(f'结果已按 {args.sort_by} 排序')
+            
             results_df.to_csv('Heikin_Ashi_SuperTrend_Metrics.csv', index=False)
             print(f'结果已保存到 Heikin_Ashi_SuperTrend_Metrics.csv，共处理成功 {len(results)} 只股票')
+            
+            # 打印前5名股票
+            print("\n性能最佳的5只股票:")
+            top5 = results_df.head(5)
+            for _, row in top5.iterrows():
+                print(f"股票: {row['stock_code']}, 夏普比率: {row['sharpe']:.2f}, 最大回撤: {row['max_drawdown']:.2f}%, Score: {row['optimization_score']:.2f}")
         else:
-            print.error('没有成功处理任何股票')
+            print(f'没有成功处理任何股票')
             
     except Exception as e:
-        print.error(f'处理过程中发生错误: {str(e)}')
+        print(f'处理过程中发生错误: {str(e)}')
         pool.close()
         pool.join()
 
