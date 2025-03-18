@@ -27,6 +27,8 @@ import talib
 import pandas_ta as ta
 from wxpusher import WxPusher
 import requests
+from io import StringIO
+import csv
 
 
 def convert_to_baostock_code(ts_code: str) -> str:
@@ -168,6 +170,64 @@ def upsert_data(df: pd.DataFrame, table_name: str, temp_table: str, insert_sql: 
         
         conn.execute(text(insert_sql))
         conn.execute(text(f"DROP TABLE IF EXISTS {temp_table}"))
+
+
+def save_to_database(df: pd.DataFrame, table_name: str, conflict_columns: list, data_type: str = None, engine = None) -> bool:
+    """
+    将数据保存到PostgreSQL数据库，使用COPY命令进行快速导入
+    Args:
+        df: 要保存的数据框
+        table_name: 目标表名
+        conflict_columns: 用于处理冲突的列名列表
+        data_type: 数据类型描述（用于日志），默认为None
+        engine: SQLAlchemy引擎，如果为None则自动创建
+    Returns:
+        bool: 是否保存成功
+    """
+    try:
+        # 参数处理
+        if data_type is None:
+            data_type = table_name
+            
+        if engine is None:
+            config = load_config()
+            engine = create_engine(get_pg_connection_string(config))
+        
+        # 创建带时间戳的临时表名，避免并发冲突
+        temp_table = f"temp_{table_name.split('.')[-1]}_{int(time.time())}"
+        
+        with engine.begin() as conn:
+            # 创建临时表结构
+            df.head(0).to_sql(temp_table, conn, if_exists='replace', index=False)
+            
+            # 使用COPY命令快速导入数据
+            cur = conn.connection.cursor()
+            
+            # 将DataFrame转换为CSV格式
+            output = StringIO()
+            df.to_csv(output, sep='\t', header=False, index=False, quoting=csv.QUOTE_MINIMAL)
+            output.seek(0)
+            
+            # 使用COPY命令一次性导入所有数据
+            cur.copy_from(output, temp_table, sep='\t', null='')
+            
+            # 执行UPSERT操作
+            insert_sql = f"""
+                INSERT INTO {table_name}
+                SELECT * FROM {temp_table}
+                ON CONFLICT ({', '.join(conflict_columns)}) DO NOTHING
+            """
+            conn.execute(text(insert_sql))
+            
+            # 清理临时表
+            conn.execute(text(f"DROP TABLE IF EXISTS {temp_table}"))
+            
+        logger.info(f"成功保存 {len(df)}条 {data_type} 数据到 {table_name} 表")
+        return True
+        
+    except Exception as e:
+        logger.error(f"保存{data_type}数据时出错: {str(e)}")
+        return False
 
 
 def convert_date_format(date_str: str) -> str:

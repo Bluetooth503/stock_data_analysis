@@ -3,7 +3,6 @@ from common import *
 import tushare as ts
 import schedule
 
-
 # ================================= 定义初始变量 =================================
 n_days = 3 # 分析个股N个交易日资金流向
 wait_seconds = 600 # 等待时间
@@ -172,7 +171,7 @@ def _zscore_normalize_to_100(series):
     normalized = 100 / (1 + np.exp(-z_scores))
     return normalized.round(4)
 
-def calculate_stock_score(moneyflow_df, basic_df):
+def calculate_stock_score(moneyflow_df, basic_df, daily_k_df):
     """计算个股资金流向得分"""
     # 计算净流入
     net_flows = {
@@ -237,53 +236,80 @@ def calculate_stock_score(moneyflow_df, basic_df):
     stock_rank = stock_rank.reset_index(drop=True)
     stock_rank.insert(0, '排名', range(1, len(stock_rank) + 1))
     
-    # 使用SQL计算成交额,净流入分位数
-    current_date = moneyflow_df['trade_date'].max()
-    percentile_sql = f"""
-    WITH 
-    -- 计算当前n_days的均值
-    current_means AS (
-        SELECT 
-            k.ts_code,
-            AVG(k.amount) as current_amount_mean,
-            AVG(m.net_mf_amount) as current_netflow_mean
-        FROM a_stock_daily_k k
-        LEFT JOIN a_stock_moneyflow m ON k.ts_code = m.ts_code AND k.trade_date = m.trade_date
-        WHERE k.trade_date > TO_CHAR(TO_DATE('{current_date}', 'YYYYMMDD') - INTERVAL '{n_days} days', 'YYYYMMDD')
-        AND  k.trade_date <= TO_CHAR(TO_DATE('{current_date}', 'YYYYMMDD'), 'YYYYMMDD')
-        GROUP BY k.ts_code
-    ),
-    -- 计算分位数
-    amount_percentiles AS (
-        SELECT 
-            cm.ts_code,
-            NTILE(10) OVER (PARTITION BY k.ts_code ORDER BY k.amount) * 10 as amount_percentile
-        FROM current_means cm
-        LEFT JOIN a_stock_daily_k k ON k.ts_code = cm.ts_code
-        WHERE k.trade_date > TO_CHAR(TO_DATE('{current_date}', 'YYYYMMDD') - INTERVAL '365 days', 'YYYYMMDD')
-        AND  k.trade_date <= TO_CHAR(TO_DATE('{current_date}', 'YYYYMMDD'), 'YYYYMMDD')
-        AND k.amount <= cm.current_amount_mean
-    ),
-    netflow_percentiles AS (
-        SELECT 
-            cm.ts_code,
-            NTILE(10) OVER (PARTITION BY m.ts_code ORDER BY m.net_mf_amount) * 10 as netflow_percentile
-        FROM current_means cm
-        LEFT JOIN a_stock_moneyflow m ON m.ts_code = cm.ts_code
-        WHERE m.trade_date > TO_CHAR(TO_DATE('{current_date}', 'YYYYMMDD') - INTERVAL '365 days', 'YYYYMMDD')
-        AND  m.trade_date <= TO_CHAR(TO_DATE('{current_date}', 'YYYYMMDD'), 'YYYYMMDD')
-        AND m.net_mf_amount <= cm.current_netflow_mean
-    )
-    SELECT 
-        cm.ts_code,
-        COALESCE(MAX(ap.amount_percentile), 0) as "成交额分位数",
-        COALESCE(MAX(np.netflow_percentile), 0) as "净流入分位数"
-    FROM current_means cm
-    LEFT JOIN amount_percentiles ap ON cm.ts_code = ap.ts_code
-    LEFT JOIN netflow_percentiles np ON cm.ts_code = np.ts_code
-    GROUP BY cm.ts_code
+    # 使用已有数据计算最近n_days的均值
+    recent_amount_df = daily_k_df.groupby('ts_code')['amount'].mean().reset_index()
+    recent_amount_df.rename(columns={'amount': 'amount_mean'}, inplace=True)
+
+    recent_netflow_df = moneyflow_df.groupby('ts_code')['net_mf_amount'].mean().reset_index()
+    recent_netflow_df.rename(columns={'net_mf_amount': 'netflow_mean'}, inplace=True)
+
+    # 查询历史数据
+    current_date = moneyflow_df['trade_date'].iloc[-1]
+    history_sql = f"""
+    SELECT ts_code, trade_date, amount 
+    FROM a_stock_daily_k 
+    WHERE trade_date > TO_CHAR(TO_DATE('{current_date}', 'YYYYMMDD') - INTERVAL '365 days', 'YYYYMMDD')
+    AND trade_date <= '{current_date}'
     """
-    percentile_df = pd.read_sql(percentile_sql, engine)
+    amount_history_df = pd.read_sql(history_sql, engine)
+
+    # 查询净流入历史数据
+    netflow_sql = f"""
+    SELECT ts_code, trade_date, net_mf_amount 
+    FROM a_stock_moneyflow 
+    WHERE trade_date > TO_CHAR(TO_DATE('{current_date}', 'YYYYMMDD') - INTERVAL '365 days', 'YYYYMMDD')
+    AND trade_date <= '{current_date}'
+    """
+    netflow_history_df = pd.read_sql(netflow_sql, engine)
+
+    # 优化：预先分组数据，避免在循环中重复过滤
+    amount_history_grouped = dict(list(amount_history_df.groupby('ts_code')))
+    netflow_history_grouped = dict(list(netflow_history_df.groupby('ts_code')))
+
+    # 创建ts_code到均值的映射，避免在循环中查找
+    amount_mean_dict = dict(zip(recent_amount_df['ts_code'], recent_amount_df['amount_mean']))
+    netflow_mean_dict = dict(zip(recent_netflow_df['ts_code'], recent_netflow_df['netflow_mean']))
+
+    # 计算分位数
+    percentile_results = []
+
+    # 使用分批处理来减少内存压力
+    batch_size = 500
+    ts_codes = recent_amount_df['ts_code'].unique()
+    total_stocks = len(ts_codes)
+
+    for i in range(0, total_stocks, batch_size):
+        batch_ts_codes = ts_codes[i:min(i+batch_size, total_stocks)]
+        
+        batch_results = []
+        for ts_code in batch_ts_codes:
+            # 成交额分位数
+            ts_amount_history = amount_history_grouped.get(ts_code, pd.DataFrame())
+            if not ts_amount_history.empty and ts_code in amount_mean_dict:
+                ts_amount_values = ts_amount_history['amount'].values
+                ts_amount_mean = amount_mean_dict[ts_code]
+                amount_percentile = stats.percentileofscore(ts_amount_values, ts_amount_mean)
+            else:
+                amount_percentile = 50
+            
+            # 净流入分位数 - 使用正确的净流入数据
+            ts_netflow_history = netflow_history_grouped.get(ts_code, pd.DataFrame())
+            if not ts_netflow_history.empty and ts_code in netflow_mean_dict:
+                ts_netflow_values = ts_netflow_history['net_mf_amount'].values
+                ts_netflow_mean = netflow_mean_dict[ts_code]
+                netflow_percentile = stats.percentileofscore(ts_netflow_values, ts_netflow_mean)
+            else:
+                netflow_percentile = 50
+            
+            batch_results.append({
+                'ts_code': ts_code,
+                '成交额分位数': round(amount_percentile, 2),
+                '净流入分位数': round(netflow_percentile, 2)
+            })
+        
+        percentile_results.extend(batch_results)
+
+    percentile_df = pd.DataFrame(percentile_results)
     stock_rank = pd.merge(stock_rank, percentile_df, on='ts_code', how='left')
     
     # 结果列包含原始值和归一化值
@@ -366,8 +392,8 @@ def calculate_industry_score(industry_moneyflow_df):
         
         current_day = current_day.merge(pd.DataFrame(percentile_ranks), on='industry', how='left')
         
-        # 计算过去N日均值及其分位数
-        past_days_data = df[df['trade_date'] < latest_date].copy()
+        # 计算过去N日分位数
+        past_days_data = df[df['trade_date'] < latest_date].copy()  # 不包含当天
         past_days_data = past_days_data.sort_values(['industry', 'trade_date'], ascending=[True, False])
         
         for days in range(1, 6):
@@ -375,9 +401,19 @@ def calculate_industry_score(industry_moneyflow_df):
             for industry in current_day['industry'].unique():
                 try:
                     industry_data = past_days_data[past_days_data['industry'] == industry]
-                    percentile = calculate_rolling_percentile(
-                        industry_data, 'industry', 'net_amount', days
-                    )
+                    
+                    # 获取第N天的数据（比如过去5日，就是第5天的值）
+                    if len(industry_data) >= days:
+                        target_day_value = industry_data.iloc[days-1]['net_amount']  # 获取第N天的净额
+                        # 使用全部历史数据计算分位数
+                        all_history_data = industry_data['net_amount']
+                        if not all_history_data.empty:
+                            percentile = calculate_percentile(all_history_data, target_day_value)
+                        else:
+                            percentile = 50
+                    else:
+                        percentile = 50
+                        
                     past_days_percentiles.append({
                         'industry': industry,
                         f'过去{days}日分位数': percentile
@@ -417,34 +453,9 @@ def calculate_industry_score(industry_moneyflow_df):
         raise
 
 # ================================= 每日执行任务 =================================
-def _save_to_database(df: pd.DataFrame, table_name: str, temp_table: str, 
-                    conflict_columns: list, data_type: str) -> bool:
-    """    
-    Args:
-        df: 要保存的数据框
-        table_name: 目标表名
-        temp_table: 临时表名
-        conflict_columns: 用于处理冲突的列名列表
-        data_type: 数据类型描述（用于日志）
-    Returns:
-        bool: 是否保存成功
-    """
-    try:
-        insert_sql = f"""
-            INSERT INTO {table_name}
-            SELECT * FROM {temp_table}
-            ON CONFLICT ({', '.join(conflict_columns)}) DO NOTHING
-        """
-        upsert_data(df, table_name, temp_table, insert_sql, engine)
-        # logger.info(f"{data_type}数据已成功保存")
-        return True
-    except Exception as e:
-        logger.error(f"保存{data_type}数据时出错: {str(e)}")
-        return False
-    
 def daily_task():
     """每日执行的任务"""
-    today = (datetime.now() - timedelta(days=1)).strftime('%Y%m%d')
+    today = (datetime.now() - timedelta(days=0)).strftime('%Y%m%d')
     
     if not is_trade_date(today):
         logger.info(f"{today} 不是交易日，跳过执行")
@@ -457,12 +468,12 @@ def daily_task():
         logger.error(f"无法获取完整的资金流向数据，请检查数据源")
         return
     
-    if not _save_to_database(
+    if not save_to_database(
         moneyflow_df, 
         'a_stock_moneyflow', 
-        'temp_moneyflow',
         ['ts_code', 'trade_date'],
-        '资金流向'
+        '资金流向',
+        engine
     ):
         return
         
@@ -473,12 +484,12 @@ def daily_task():
         logger.error(f"无法获取完整的同花顺行业资金流向数据，请检查数据源")
         return
     
-    if not _save_to_database(
+    if not save_to_database(
         industry_moneyflow_df,
         'a_stock_moneyflow_industry_ths',
-        'temp_industry_moneyflow',
         ['trade_date', 'industry_code'],
-        '同花顺行业资金流向'
+        '同花顺行业资金流向',
+        engine
     ):
         return
 
@@ -489,12 +500,12 @@ def daily_task():
         logger.error(f"无法获取完整的每日基本面数据，请检查数据源")
         return
     
-    if not _save_to_database(
+    if not save_to_database(
         basic_df,
         'a_stock_daily_basic',
-        'temp_daily_basic',
         ['ts_code', 'trade_date'],
-        '每日基本面'
+        '每日基本面',
+        engine
     ):
         return
         
@@ -505,25 +516,25 @@ def daily_task():
         logger.error(f"无法获取完整的日线行情数据，请检查数据源")
         return
     
-    if not _save_to_database(
+    if not save_to_database(
         daily_k_df,
         'a_stock_daily_k',
-        'temp_daily_k',
         ['ts_code', 'trade_date'],
-        '日线行情'
+        '日线行情',
+        engine
     ):
         return
         
     # 计算个股资金流向得分
     logger.info(f"开始计算最近{n_days}天的个股资金流向得分...")
     try:
-        stock_rank = calculate_stock_score(moneyflow_df, basic_df)
-        if not _save_to_database(
+        stock_rank = calculate_stock_score(moneyflow_df, basic_df, daily_k_df)
+        if not save_to_database(
             stock_rank,
             'a_stock_moneyflow_score',
-            'temp_moneyflow_score',
             ['ts_code', 'trade_date'],
-            '个股资金流向得分'
+            '个股资金流向得分',
+            engine
         ):
             return
     except Exception as e:
@@ -534,17 +545,19 @@ def daily_task():
     logger.info(f"开始计算最近{n_days}天的行业资金流向得分...")
     try:
         industry_rank = calculate_industry_score(industry_moneyflow_df)
-        if not _save_to_database(
+        if not save_to_database(
             industry_rank,
             'a_stock_moneyflow_industry_score',
-            'temp_industry_moneyflow_score',
             ['industry_code', 'trade_date'],
-            '行业资金流向得分'
+            '行业资金流向得分',
+            engine
         ):
             return
     except Exception as e:
         logger.error(f"计算行业资金流向得分时出错: {e}")
         return
+
+    logger.info(f"{today}的任务完成!!!")
 
 def main():
     """主函数"""
