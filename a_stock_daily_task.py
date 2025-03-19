@@ -4,7 +4,7 @@ import tushare as ts
 import schedule
 
 # ================================= 定义初始变量 =================================
-n_days = 3 # 分析个股N个交易日资金流向
+n_days = 2 # 分析个股N个交易日资金流向
 wait_seconds = 600 # 等待时间
 max_retries = 100  # 最大重试次数
 
@@ -191,8 +191,8 @@ def calculate_stock_score(moneyflow_df, basic_df, daily_k_df):
         "小单净流入": "sum",
         "circ_mv": "last",
         "circ_mv_range": "last",
-        "volume_ratio": "mean",
-        "turnover_rate": "mean"
+        "volume_ratio": lambda x: x.ewm(span=n_days).mean().iloc[-1],
+        "turnover_rate": lambda x: x.ewm(span=n_days).mean().iloc[-1]
     }
     stock_data = merged_df.groupby("ts_code").agg(agg_dict).rename(columns={
         "特大单净流入": "特大单净流入总和",
@@ -237,10 +237,10 @@ def calculate_stock_score(moneyflow_df, basic_df, daily_k_df):
     stock_rank.insert(0, '排名', range(1, len(stock_rank) + 1))
     
     # 使用已有数据计算最近n_days的均值
-    recent_amount_df = daily_k_df.groupby('ts_code')['amount'].mean().reset_index()
+    recent_amount_df = daily_k_df.groupby('ts_code')['amount'].apply(lambda x: x.ewm(span=n_days).mean().iloc[-1]).reset_index()
     recent_amount_df.rename(columns={'amount': 'amount_mean'}, inplace=True)
 
-    recent_netflow_df = moneyflow_df.groupby('ts_code')['net_mf_amount'].mean().reset_index()
+    recent_netflow_df = moneyflow_df.groupby('ts_code')['net_mf_amount'].apply(lambda x: x.ewm(span=n_days).mean().iloc[-1]).reset_index()
     recent_netflow_df.rename(columns={'net_mf_amount': 'netflow_mean'}, inplace=True)
 
     # 查询历史数据
@@ -274,7 +274,7 @@ def calculate_stock_score(moneyflow_df, basic_df, daily_k_df):
     percentile_results = []
 
     # 使用分批处理来减少内存压力
-    batch_size = 500
+    batch_size = 1000
     ts_codes = recent_amount_df['ts_code'].unique()
     total_stocks = len(ts_codes)
 
@@ -334,20 +334,6 @@ def calculate_percentile(data: pd.Series, value: float, default: float = 50) -> 
     except Exception as e:
         logger.error(f"计算分位数时出错: {str(e)}")
         return default
-
-def calculate_rolling_percentile(df: pd.DataFrame, group_col: str, value_col: str, 
-                               window: int, min_periods: int = 1) -> float:
-    """计算滚动均值的分位数"""
-    try:
-        df['rolling_mean'] = df[value_col].rolling(window=window, min_periods=min_periods).mean()
-        if not df.empty and not df['rolling_mean'].isnull().all():
-            latest_mean = df['rolling_mean'].dropna().iloc[0] if not df['rolling_mean'].dropna().empty else 0
-            valid_means = df['rolling_mean'].dropna()
-            return calculate_percentile(valid_means, latest_mean)
-        return 50
-    except Exception as e:
-        logger.error(f"计算滚动分位数时出错: {str(e)}")
-        return 50
 
 def calculate_industry_score(industry_moneyflow_df):
     """计算行业资金流向得分"""
@@ -558,6 +544,7 @@ def daily_task():
         return
 
     logger.info(f"{today}的任务完成!!!")
+    send_notification(f"{today}的daily task完成!!!", f"{today}的daily task完成!!!")
 
 def main():
     """主函数"""
