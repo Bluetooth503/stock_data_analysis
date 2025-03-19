@@ -4,9 +4,12 @@ import tushare as ts
 import schedule
 
 # ================================= 定义初始变量 =================================
-n_days = 2 # 分析个股N个交易日资金流向
-wait_seconds = 600 # 等待时间
-max_retries = 100  # 最大重试次数
+n_days = 3          # 分析个股N个交易日累积资金流向(包含当日)
+wait_seconds = 600  # 等待时间
+max_retries = 100   # 最大重试次数
+n = 0               # 当日偏移量,计算旧数据
+run_time = "16:30"  # 运行时间
+sleep_seconds = 600 # 等待时间
 
 # ================================= 读取配置文件 =================================
 config = load_config()
@@ -159,6 +162,175 @@ def get_daily_k_with_retry(today, max_retries, wait_seconds):
         wait_seconds=wait_seconds,
         api_func=pro.daily
     )
+
+# ================================= 指数每日指标数据 =================================
+def get_index_dailybasic_with_retry(today, max_retries, wait_seconds):
+    """获取最近n_days的指数每日指标数据"""
+    indices = [
+        ('000300.SH', '沪深300'),
+        ('000905.SH', '中证500'),
+        ('399005.SZ', '中小100'),
+        ('399006.SZ', '创业板指')
+    ]
+    
+    def get_index_data(trade_date):
+        all_index_data = []
+        for index_code, index_name in indices:
+            df = pro.index_dailybasic(ts_code=index_code, trade_date=trade_date)
+            if not df.empty:
+                df = df.rename(columns={'ts_code': 'index_code'})
+                df['index_name'] = index_name
+                all_index_data.append(df)
+        if all_index_data:
+            return pd.concat(all_index_data, ignore_index=True)
+        return pd.DataFrame()
+    
+    return get_data_with_retry(
+        data_type="指数每日指标",
+        today=today,
+        max_retries=max_retries,
+        wait_seconds=wait_seconds,
+        api_func=get_index_data
+    )
+
+# ================================= 指数市值得分计算 =================================
+def calculate_index_marketvalue_score(index_dailybasic_df):
+    """计算指数市值和换手率分位数得分"""
+    try:
+        latest_date = index_dailybasic_df['trade_date'].max()
+        
+        # 获取历史数据
+        sql = """
+        SELECT * FROM a_stock_index_dailybasic
+        WHERE trade_date >= TO_CHAR(TO_DATE(%s, 'YYYYMMDD') - INTERVAL '365 days', 'YYYYMMDD')
+        AND trade_date <= %s
+        """
+        df = pd.read_sql(sql, engine, params=(latest_date, latest_date))
+        
+        # 处理当日数据
+        current_day = df[df['trade_date'] == latest_date].copy()
+        if current_day.empty:
+            current_day = index_dailybasic_df[index_dailybasic_df['trade_date'] == latest_date].copy()
+        
+        # 先将所有数据的float_mv转换为亿元
+        df['float_mv'] = df['float_mv'] / 100000000  # 转换历史数据
+        current_day['float_mv'] = current_day['float_mv'] / 100000000  # 转换当前数据
+        
+        # 计算流通市值（亿元）和平均价格
+        current_day['流通市值(亿)'] = current_day['float_mv'].round(2)
+        current_day['平均价格'] = (current_day['float_mv'] * 100000000 / current_day['float_share']).round(2)  # 转回元计算平均价格
+        
+        # 计算分位数
+        percentile_ranks = []
+        for index_code in current_day['index_code'].unique():
+            try:
+                # 获取该指数的历史数据
+                index_history = df[df['index_code'] == index_code]
+                current_index = current_day[current_day['index_code'] == index_code].iloc[0]
+                
+                # 计算流通市值分位数（已经是亿元单位了）
+                if not index_history.empty:
+                    float_mv_percentile = stats.percentileofscore(index_history['float_mv'].values, 
+                                                                current_index['float_mv'])
+                else:
+                    float_mv_percentile = 50
+                    
+                # 计算换手率分位数
+                if not index_history.empty:
+                    turnover_percentile = stats.percentileofscore(index_history['turnover_rate'].values, 
+                                                                current_index['turnover_rate'])
+                else:
+                    turnover_percentile = 50
+                
+                percentile_ranks.append({
+                    'index_code': index_code,
+                    'index_name': current_index['index_name'],
+                    'trade_date': latest_date,
+                    '流通市值(亿)': current_index['流通市值(亿)'],
+                    '流通市值分位数': round(float_mv_percentile, 2),
+                    '换手率(%)': round(current_index['turnover_rate'], 2),
+                    '换手率分位数': round(turnover_percentile, 2),
+                    '平均价格': current_index['平均价格']
+                })
+                
+            except Exception as e:
+                logger.error(f"计算指数 {index_code} 的分位数时出错: {str(e)}")
+                continue
+        
+        if not percentile_ranks:
+            logger.error("没有计算出任何指数的分位数")
+            return None
+            
+        result = pd.DataFrame(percentile_ranks)
+        
+        # 按流通市值分位数降序排序
+        result = result.sort_values('流通市值分位数', ascending=False)
+        
+        # 确保列的顺序正确
+        result_columns = ['trade_date', 'index_code', 'index_name', 
+                         '流通市值(亿)', '流通市值分位数', 
+                         '换手率(%)', '换手率分位数',
+                         '平均价格']
+        
+        return result[result_columns]
+        
+    except Exception as e:
+        logger.error(f"计算指数市值得分时出错: {str(e)}")
+        return None
+
+# ================================= 市场资金净流入分位数计算 =================================
+def calculate_market_moneyflow_score(industry_moneyflow_df):
+    """计算市场资金净流入分位数"""
+    try:
+        latest_date = industry_moneyflow_df['trade_date'].max()
+        
+        # 获取历史数据
+        sql = """
+        SELECT trade_date, SUM(net_amount) as total_net_amount 
+        FROM a_stock_moneyflow_industry_ths
+        WHERE trade_date >= TO_CHAR(TO_DATE(%s, 'YYYYMMDD') - INTERVAL '365 days', 'YYYYMMDD')
+        AND trade_date <= %s
+        GROUP BY trade_date
+        ORDER BY trade_date DESC
+        """
+        df = pd.read_sql(sql, engine, params=(latest_date, latest_date))
+        
+        # 处理当日数据
+        current_day = df[df['trade_date'] == latest_date].copy()
+        if current_day.empty:
+            # 如果当日数据不在历史数据中，从传入的DataFrame计算
+            current_net = industry_moneyflow_df[industry_moneyflow_df['trade_date'] == latest_date]['net_amount'].sum()
+            current_day = pd.DataFrame([{
+                'trade_date': latest_date,
+                'total_net_amount': current_net
+            }])
+        
+        # 计算净值（亿元）- net_amount已经是亿元单位
+        current_day['净值(亿元)'] = current_day['total_net_amount'].round(3)
+        
+        # 计算分位数
+        try:
+            if not df.empty:
+                net_percentile = stats.percentileofscore(df['total_net_amount'].values, 
+                                                       current_day['total_net_amount'].iloc[0])
+            else:
+                net_percentile = 50
+                
+            result = pd.DataFrame({
+                'trade_date': [latest_date],
+                '净值(亿元)': current_day['净值(亿元)'].values,
+                '净值分位数': [round(net_percentile, 2)]
+            })
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"计算市场资金净流入分位数时出错: {str(e)}")
+            return None
+        
+    except Exception as e:
+        logger.error(f"计算市场资金净流入分位数时出错: {str(e)}")
+        return None
 
 # ================================= 个股资金流向得分计算 =================================
 def _zscore_normalize_to_100(series):
@@ -441,7 +613,7 @@ def calculate_industry_score(industry_moneyflow_df):
 # ================================= 每日执行任务 =================================
 def daily_task():
     """每日执行的任务"""
-    today = (datetime.now() - timedelta(days=0)).strftime('%Y%m%d')
+    today = (datetime.now() - timedelta(days=n)).strftime('%Y%m%d')
     
     if not is_trade_date(today):
         logger.info(f"{today} 不是交易日，跳过执行")
@@ -510,7 +682,39 @@ def daily_task():
         engine
     ):
         return
+
+    # 获取指数每日指标数据
+    logger.info(f"开始获取最近{n_days}天的指数每日指标数据...")
+    index_dailybasic_df = get_index_dailybasic_with_retry(today, max_retries, wait_seconds)
+    if index_dailybasic_df is None:
+        logger.error(f"无法获取完整的指数每日指标数据，请检查数据源")
+        return
+    
+    if not save_to_database(
+        index_dailybasic_df,
+        'a_stock_index_dailybasic',
+        ['index_code', 'trade_date'],
+        '指数每日指标',
+        engine
+    ):
+        return
         
+    # 计算指数市值得分
+    logger.info(f"开始计算最近{n_days}天的指数市值得分...")
+    try:
+        index_score = calculate_index_marketvalue_score(index_dailybasic_df)
+        if not save_to_database(
+            index_score,
+            'a_stock_index_marketvalue_score',
+            ['index_code', 'trade_date'],
+            '指数市值得分',
+            engine
+        ):
+            return
+    except Exception as e:
+        logger.error(f"计算指数市值得分时出错: {e}")
+        return
+
     # 计算个股资金流向得分
     logger.info(f"开始计算最近{n_days}天的个股资金流向得分...")
     try:
@@ -543,17 +747,33 @@ def daily_task():
         logger.error(f"计算行业资金流向得分时出错: {e}")
         return
 
+    # 计算市场资金净流入分位数
+    logger.info(f"开始计算最近{n_days}天的市场资金净流入分位数...")
+    try:
+        market_score = calculate_market_moneyflow_score(industry_moneyflow_df)
+        if not save_to_database(
+            market_score,
+            'a_stock_market_moneyflow_score',
+            ['trade_date'],
+            '市场资金净流入分位数',
+            engine
+        ):
+            return
+    except Exception as e:
+        logger.error(f"计算市场资金净流入分位数时出错: {e}")
+        return
+
     logger.info(f"{today}的任务完成!!!")
     send_notification(f"{today}的daily task完成!!!", f"{today}的daily task完成!!!")
 
 def main():
     """主函数"""
-    schedule.every().day.at("16:30").do(daily_task)
+    schedule.every().day.at(run_time).do(daily_task)
     
-    logger.info("定时任务已启动，将在每个交易日下午16:30执行...")
+    logger.info(f"定时任务已启动，将在每个交易日下午{run_time}执行...")
     while True:
         schedule.run_pending()
-        time.sleep(600)
+        time.sleep(sleep_seconds)
 
 if __name__ == "__main__":
     main()
