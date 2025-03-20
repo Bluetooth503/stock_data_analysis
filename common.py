@@ -172,7 +172,7 @@ def upsert_data(df: pd.DataFrame, table_name: str, temp_table: str, insert_sql: 
         conn.execute(text(f"DROP TABLE IF EXISTS {temp_table}"))
 
 
-def save_to_database(df: pd.DataFrame, table_name: str, conflict_columns: list, data_type: str = None, engine = None) -> bool:
+def save_to_database(df: pd.DataFrame, table_name: str, conflict_columns: list, data_type: str = None, engine = None, update_columns: list = None) -> bool:
     """
     将数据保存到PostgreSQL数据库，使用COPY命令进行快速导入
     Args:
@@ -181,6 +181,7 @@ def save_to_database(df: pd.DataFrame, table_name: str, conflict_columns: list, 
         conflict_columns: 用于处理冲突的列名列表
         data_type: 数据类型描述（用于日志），默认为None
         engine: SQLAlchemy引擎，如果为None则自动创建
+        update_columns: 发生冲突时需要更新的列名列表，默认为None（执行DO NOTHING）
     Returns:
         bool: 是否保存成功
     """
@@ -211,12 +212,23 @@ def save_to_database(df: pd.DataFrame, table_name: str, conflict_columns: list, 
             # 使用COPY命令一次性导入所有数据
             cur.copy_from(output, temp_table, sep='\t', null='')
             
-            # 执行UPSERT操作
-            insert_sql = f"""
-                INSERT INTO {table_name}
-                SELECT * FROM {temp_table}
-                ON CONFLICT ({', '.join(conflict_columns)}) DO NOTHING
-            """
+            # 构建UPSERT操作的SQL语句
+            if update_columns:
+                # 构建UPDATE SET子句，为特殊字符的列名添加双引号
+                set_clause = ", ".join([f'"{col}" = EXCLUDED."{col}"' for col in update_columns])
+                insert_sql = f"""
+                    INSERT INTO {table_name}
+                    SELECT * FROM {temp_table}
+                    ON CONFLICT ({', '.join([f'"{col}"' for col in conflict_columns])})
+                    DO UPDATE SET {set_clause}
+                """
+            else:
+                insert_sql = f"""
+                    INSERT INTO {table_name}
+                    SELECT * FROM {temp_table}
+                    ON CONFLICT ({', '.join([f'"{col}"' for col in conflict_columns])}) DO NOTHING
+                """
+            
             conn.execute(text(insert_sql))
             
             # 清理临时表

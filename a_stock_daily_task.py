@@ -267,7 +267,7 @@ def calculate_index_marketvalue_score(index_dailybasic_df):
         result = result.sort_values('流通市值分位数', ascending=False)
         
         # 确保列的顺序正确
-        result_columns = ['trade_date', 'index_code', 'index_name', 
+        result_columns = ['index_code', 'index_name', 'trade_date', 
                          '流通市值(亿)', '流通市值分位数', 
                          '换手率(%)', '换手率分位数',
                          '平均价格']
@@ -345,156 +345,161 @@ def _zscore_normalize_to_100(series):
 
 def calculate_stock_score(moneyflow_df, basic_df, daily_k_df):
     """计算个股资金流向得分"""
-    # 计算净流入
-    net_flows = {
-        "特大单净流入": moneyflow_df["buy_elg_amount"] - moneyflow_df["sell_elg_amount"],
-        "大单净流入":   moneyflow_df["buy_lg_amount"]  - moneyflow_df["sell_lg_amount"],
-        "中单净流入":   moneyflow_df["buy_md_amount"]  - moneyflow_df["sell_md_amount"],
-        "小单净流入":   moneyflow_df["buy_sm_amount"]  - moneyflow_df["sell_sm_amount"]
-    }
-    moneyflow_df = moneyflow_df.assign(**net_flows)
-    merged_df = pd.merge(moneyflow_df, basic_df, on=['ts_code','trade_date'], how='left')
+    try:
+        # 计算净流入
+        net_flows = {
+            "特大单净流入": moneyflow_df["buy_elg_amount"] - moneyflow_df["sell_elg_amount"],
+            "大单净流入":   moneyflow_df["buy_lg_amount"]  - moneyflow_df["sell_lg_amount"],
+            "中单净流入":   moneyflow_df["buy_md_amount"]  - moneyflow_df["sell_md_amount"],
+            "小单净流入":   moneyflow_df["buy_sm_amount"]  - moneyflow_df["sell_sm_amount"]
+        }
+        moneyflow_df = moneyflow_df.assign(**net_flows)
+        merged_df = pd.merge(moneyflow_df, basic_df, on=['ts_code','trade_date'], how='left')
 
-    # 按股票代码分组,聚合计算多日指标
-    agg_dict = {
-        "特大单净流入": "sum",
-        "大单净流入": "sum",
-        "中单净流入": "sum",
-        "小单净流入": "sum",
-        "circ_mv": "last",
-        "circ_mv_range": "last",
-        "volume_ratio": lambda x: x.ewm(span=n_days).mean().iloc[-1],
-        "turnover_rate": lambda x: x.ewm(span=n_days).mean().iloc[-1]
-    }
-    stock_data = merged_df.groupby("ts_code").agg(agg_dict).rename(columns={
-        "特大单净流入": "特大单净流入总和",
-        "大单净流入": "大单净流入总和",
-        "中单净流入": "中单净流入总和",
-        "小单净流入": "小单净流入总和",
-        "circ_mv": "市值",
-        "circ_mv_range": "市值区间",
-        "volume_ratio": "量比均值",
-        "turnover_rate": "换手率均值"
-    }).reset_index()
-    
-    # 计算资金流向指标（原始值和Z-score标准化值）
-    for flow_type in ['特大单', '大单', '中单', '小单']:
-        col = f'{flow_type}/市值'
-        stock_data[col] = (stock_data[f'{flow_type}净流入总和'] / stock_data['市值'] * 100).round(4)
-        stock_data[f'{col}_Z'] = stock_data.groupby('市值区间')[col].apply(_zscore_normalize_to_100).reset_index(level=0, drop=True)
-    
-    # 对换手率和量比也进行分组Z-score标准化
-    for metric in ['换手率均值', '量比均值']:
-        stock_data[f'{metric}_Z'] = stock_data.groupby('市值区间')[metric].apply(_zscore_normalize_to_100).reset_index(level=0, drop=True)
-    
-    # 定义固定权重（使用标准化后的值计算得分）
-    weights = {
-        '特大单/市值_Z': 0.30,
-        '大单/市值_Z': 0.25,
-        '中单/市值_Z': 0.15,
-        '小单/市值_Z': 0.10,
-        '换手率均值_Z': 0.10,
-        '量比均值_Z': 0.10
-    }
-    
-    # 按市值区间分组对综合得分进行Z-score标准化
-    stock_data['综合得分'] = sum(stock_data[col] * weight for col, weight in weights.items())
-    stock_data['综合得分'] = stock_data.groupby('市值区间')['综合得分'].apply(_zscore_normalize_to_100).reset_index(level=0, drop=True)
-
-    # 个股按得分排序
-    stock_rank = stock_data.sort_values('综合得分', ascending=False).round(2)
-    stock_rank['trade_date'] = moneyflow_df['trade_date'].iloc[-1]
-    stock_rank['统计天数'] = n_days
-    stock_rank = stock_rank.reset_index(drop=True)
-    stock_rank.insert(0, '排名', range(1, len(stock_rank) + 1))
-    
-    # 使用已有数据计算最近n_days的均值
-    recent_amount_df = daily_k_df.groupby('ts_code')['amount'].apply(lambda x: x.ewm(span=n_days).mean().iloc[-1]).reset_index()
-    recent_amount_df.rename(columns={'amount': 'amount_mean'}, inplace=True)
-
-    recent_netflow_df = moneyflow_df.groupby('ts_code')['net_mf_amount'].apply(lambda x: x.ewm(span=n_days).mean().iloc[-1]).reset_index()
-    recent_netflow_df.rename(columns={'net_mf_amount': 'netflow_mean'}, inplace=True)
-
-    # 查询历史数据
-    current_date = moneyflow_df['trade_date'].iloc[-1]
-    history_sql = f"""
-    SELECT ts_code, trade_date, amount 
-    FROM a_stock_daily_k 
-    WHERE trade_date > TO_CHAR(TO_DATE('{current_date}', 'YYYYMMDD') - INTERVAL '365 days', 'YYYYMMDD')
-    AND trade_date <= '{current_date}'
-    """
-    amount_history_df = pd.read_sql(history_sql, engine)
-
-    # 查询净流入历史数据
-    netflow_sql = f"""
-    SELECT ts_code, trade_date, net_mf_amount 
-    FROM a_stock_moneyflow 
-    WHERE trade_date > TO_CHAR(TO_DATE('{current_date}', 'YYYYMMDD') - INTERVAL '365 days', 'YYYYMMDD')
-    AND trade_date <= '{current_date}'
-    """
-    netflow_history_df = pd.read_sql(netflow_sql, engine)
-
-    # 优化：预先分组数据，避免在循环中重复过滤
-    amount_history_grouped = dict(list(amount_history_df.groupby('ts_code')))
-    netflow_history_grouped = dict(list(netflow_history_df.groupby('ts_code')))
-
-    # 创建ts_code到均值的映射，避免在循环中查找
-    amount_mean_dict = dict(zip(recent_amount_df['ts_code'], recent_amount_df['amount_mean']))
-    netflow_mean_dict = dict(zip(recent_netflow_df['ts_code'], recent_netflow_df['netflow_mean']))
-
-    # 计算分位数
-    percentile_results = []
-
-    # 使用分批处理来减少内存压力
-    batch_size = 1000
-    ts_codes = recent_amount_df['ts_code'].unique()
-    total_stocks = len(ts_codes)
-
-    for i in range(0, total_stocks, batch_size):
-        batch_ts_codes = ts_codes[i:min(i+batch_size, total_stocks)]
+        # 按股票代码分组,聚合计算多日指标
+        agg_dict = {
+            "特大单净流入": "sum",
+            "大单净流入": "sum",
+            "中单净流入": "sum",
+            "小单净流入": "sum",
+            "circ_mv": "last",
+            "circ_mv_range": "last",
+            "volume_ratio": lambda x: x.ewm(span=n_days).mean().iloc[-1],
+            "turnover_rate": lambda x: x.ewm(span=n_days).mean().iloc[-1]
+        }
+        stock_data = merged_df.groupby("ts_code").agg(agg_dict).rename(columns={
+            "特大单净流入": "特大单净流入总和",
+            "大单净流入": "大单净流入总和",
+            "中单净流入": "中单净流入总和",
+            "小单净流入": "小单净流入总和",
+            "circ_mv": "市值",
+            "circ_mv_range": "市值区间",
+            "volume_ratio": "量比均值",
+            "turnover_rate": "换手率均值"
+        }).reset_index()
         
-        batch_results = []
-        for ts_code in batch_ts_codes:
-            # 成交额分位数
-            ts_amount_history = amount_history_grouped.get(ts_code, pd.DataFrame())
-            if not ts_amount_history.empty and ts_code in amount_mean_dict:
-                ts_amount_values = ts_amount_history['amount'].values
-                ts_amount_mean = amount_mean_dict[ts_code]
-                amount_percentile = stats.percentileofscore(ts_amount_values, ts_amount_mean)
-            else:
-                amount_percentile = 50
-            
-            # 净流入分位数 - 使用正确的净流入数据
-            ts_netflow_history = netflow_history_grouped.get(ts_code, pd.DataFrame())
-            if not ts_netflow_history.empty and ts_code in netflow_mean_dict:
-                ts_netflow_values = ts_netflow_history['net_mf_amount'].values
-                ts_netflow_mean = netflow_mean_dict[ts_code]
-                netflow_percentile = stats.percentileofscore(ts_netflow_values, ts_netflow_mean)
-            else:
-                netflow_percentile = 50
-            
-            batch_results.append({
-                'ts_code': ts_code,
-                '成交额分位数': round(amount_percentile, 2),
-                '净流入分位数': round(netflow_percentile, 2)
-            })
+        # 计算资金流向指标（原始值和Z-score标准化值）
+        for flow_type in ['特大单', '大单', '中单', '小单']:
+            col = f'{flow_type}/市值'
+            stock_data[col] = (stock_data[f'{flow_type}净流入总和'] / stock_data['市值'] * 100).round(4)
+            stock_data[f'{col}_Z'] = stock_data.groupby('市值区间')[col].apply(_zscore_normalize_to_100).reset_index(level=0, drop=True)
         
-        percentile_results.extend(batch_results)
+        # 对换手率和量比也进行分组Z-score标准化
+        for metric in ['换手率均值', '量比均值']:
+            stock_data[f'{metric}_Z'] = stock_data.groupby('市值区间')[metric].apply(_zscore_normalize_to_100).reset_index(level=0, drop=True)
+        
+        # 定义固定权重（使用标准化后的值计算得分）
+        weights = {
+            '特大单/市值_Z': -0.17,
+            '大单/市值_Z': -0.15,
+            '中单/市值_Z': -0.17,
+            '小单/市值_Z': -0.36,
+            '换手率均值_Z': 0.05,
+            '量比均值_Z': 0.10
+        }
+        
+        # 按市值区间分组对综合得分进行Z-score标准化
+        stock_data['综合得分'] = sum(stock_data[col] * weight for col, weight in weights.items())
+        stock_data['综合得分'] = stock_data.groupby('市值区间')['综合得分'].apply(_zscore_normalize_to_100).reset_index(level=0, drop=True)
 
-    percentile_df = pd.DataFrame(percentile_results)
-    stock_rank = pd.merge(stock_rank, percentile_df, on='ts_code', how='left')
-    
-    # 结果列包含原始值和归一化值
-    result_columns = ['trade_date', 'ts_code', '统计天数', '排名', '市值区间', 
-                     '特大单/市值', '特大单/市值_Z',
-                     '大单/市值', '大单/市值_Z',
-                     '中单/市值', '中单/市值_Z',
-                     '小单/市值', '小单/市值_Z',
-                     '换手率均值', '换手率均值_Z',
-                     '量比均值', '量比均值_Z',
-                     '成交额分位数', '净流入分位数',
-                     '综合得分']
-    return stock_rank[result_columns]
+        # 个股按得分排序
+        stock_rank = stock_data.sort_values('综合得分', ascending=False).round(2)
+        stock_rank['trade_date'] = moneyflow_df['trade_date'].iloc[-1]
+        stock_rank['统计天数'] = n_days
+        stock_rank = stock_rank.reset_index(drop=True)
+        stock_rank.insert(0, '排名', range(1, len(stock_rank) + 1))
+        
+        # 使用已有数据计算最近n_days的均值
+        recent_amount_df = daily_k_df.groupby('ts_code')['amount'].apply(lambda x: x.ewm(span=n_days).mean().iloc[-1]).reset_index()
+        recent_amount_df.rename(columns={'amount': 'amount_mean'}, inplace=True)
+
+        recent_netflow_df = moneyflow_df.groupby('ts_code')['net_mf_amount'].apply(lambda x: x.ewm(span=n_days).mean().iloc[-1]).reset_index()
+        recent_netflow_df.rename(columns={'net_mf_amount': 'netflow_mean'}, inplace=True)
+
+        # 查询历史数据
+        current_date = moneyflow_df['trade_date'].iloc[-1]
+        history_sql = f"""
+        SELECT ts_code, trade_date, amount 
+        FROM a_stock_daily_k 
+        WHERE trade_date > TO_CHAR(TO_DATE('{current_date}', 'YYYYMMDD') - INTERVAL '365 days', 'YYYYMMDD')
+        AND trade_date <= '{current_date}'
+        """
+        amount_history_df = pd.read_sql(history_sql, engine)
+
+        # 查询净流入历史数据
+        netflow_sql = f"""
+        SELECT ts_code, trade_date, net_mf_amount 
+        FROM a_stock_moneyflow 
+        WHERE trade_date > TO_CHAR(TO_DATE('{current_date}', 'YYYYMMDD') - INTERVAL '365 days', 'YYYYMMDD')
+        AND trade_date <= '{current_date}'
+        """
+        netflow_history_df = pd.read_sql(netflow_sql, engine)
+
+        # 优化：预先分组数据，避免在循环中重复过滤
+        amount_history_grouped = dict(list(amount_history_df.groupby('ts_code')))
+        netflow_history_grouped = dict(list(netflow_history_df.groupby('ts_code')))
+
+        # 创建ts_code到均值的映射，避免在循环中查找
+        amount_mean_dict = dict(zip(recent_amount_df['ts_code'], recent_amount_df['amount_mean']))
+        netflow_mean_dict = dict(zip(recent_netflow_df['ts_code'], recent_netflow_df['netflow_mean']))
+
+        # 计算分位数
+        percentile_results = []
+
+        # 使用分批处理来减少内存压力
+        batch_size = 1000
+        ts_codes = recent_amount_df['ts_code'].unique()
+        total_stocks = len(ts_codes)
+
+        for i in range(0, total_stocks, batch_size):
+            batch_ts_codes = ts_codes[i:min(i+batch_size, total_stocks)]
+            
+            batch_results = []
+            for ts_code in batch_ts_codes:
+                # 成交额分位数
+                ts_amount_history = amount_history_grouped.get(ts_code, pd.DataFrame())
+                if not ts_amount_history.empty and ts_code in amount_mean_dict:
+                    ts_amount_values = ts_amount_history['amount'].values
+                    ts_amount_mean = amount_mean_dict[ts_code]
+                    amount_percentile = stats.percentileofscore(ts_amount_values, ts_amount_mean)
+                else:
+                    amount_percentile = 50
+                
+                # 净流入分位数 - 使用正确的净流入数据
+                ts_netflow_history = netflow_history_grouped.get(ts_code, pd.DataFrame())
+                if not ts_netflow_history.empty and ts_code in netflow_mean_dict:
+                    ts_netflow_values = ts_netflow_history['net_mf_amount'].values
+                    ts_netflow_mean = netflow_mean_dict[ts_code]
+                    netflow_percentile = stats.percentileofscore(ts_netflow_values, ts_netflow_mean)
+                else:
+                    netflow_percentile = 50
+                
+                batch_results.append({
+                    'ts_code': ts_code,
+                    '成交额分位数': round(amount_percentile, 2),
+                    '净流入分位数': round(netflow_percentile, 2)
+                })
+            
+            percentile_results.extend(batch_results)
+
+        percentile_df = pd.DataFrame(percentile_results)
+        stock_rank = pd.merge(stock_rank, percentile_df, on='ts_code', how='left')
+        
+        # 结果列包含原始值和归一化值
+        result_columns = ['trade_date', 'ts_code', '统计天数', '排名', '市值区间', 
+                        '特大单/市值', '特大单/市值_Z',
+                        '大单/市值', '大单/市值_Z',
+                        '中单/市值', '中单/市值_Z',
+                        '小单/市值', '小单/市值_Z',
+                        '换手率均值', '换手率均值_Z',
+                        '量比均值', '量比均值_Z',
+                        '成交额分位数', '净流入分位数',
+                        '综合得分']
+        return stock_rank[result_columns]
+    except Exception as e:
+        logger.error(f"计算个股资金流向得分时出错: {e}")
+        return None
+
 
 # ================================= 行业资金流向得分计算 =================================
 def calculate_percentile(data: pd.Series, value: float, default: float = 50) -> float:
@@ -627,11 +632,12 @@ def daily_task():
         return
     
     if not save_to_database(
-        moneyflow_df, 
-        'a_stock_moneyflow', 
-        ['ts_code', 'trade_date'],
-        '资金流向',
-        engine
+        df=moneyflow_df, 
+        table_name='a_stock_moneyflow', 
+        conflict_columns=['ts_code', 'trade_date'],
+        update_columns=['buy_sm_vol','buy_sm_amount','sell_sm_vol','sell_sm_amount','buy_md_vol','buy_md_amount','sell_md_vol','sell_md_amount','buy_lg_vol','buy_lg_amount','sell_lg_vol','sell_lg_amount','buy_elg_vol','buy_elg_amount','sell_elg_vol','sell_elg_amount','net_mf_vol','net_mf_amount'],
+        data_type='资金流向',
+        engine=engine
     ):
         return
         
@@ -643,11 +649,12 @@ def daily_task():
         return
     
     if not save_to_database(
-        industry_moneyflow_df,
-        'a_stock_moneyflow_industry_ths',
-        ['trade_date', 'industry_code'],
-        '同花顺行业资金流向',
-        engine
+        df=industry_moneyflow_df,
+        table_name='a_stock_moneyflow_industry_ths',
+        conflict_columns=['trade_date', 'industry_code'],
+        update_columns=['industry','lead_stock','close','pct_change','company_num','pct_change_stock','close_price','net_buy_amount','net_sell_amount','net_amount'],
+        data_type='同花顺行业资金流向',
+        engine=engine
     ):
         return
 
@@ -659,11 +666,12 @@ def daily_task():
         return
     
     if not save_to_database(
-        basic_df,
-        'a_stock_daily_basic',
-        ['ts_code', 'trade_date'],
-        '每日基本面',
-        engine
+        df=basic_df,
+        table_name='a_stock_daily_basic',
+        conflict_columns=['ts_code', 'trade_date'],
+        update_columns=['close','turnover_rate','turnover_rate_f','volume_ratio','pe','pe_ttm','pb','ps','ps_ttm','dv_ratio','dv_ttm','total_share','float_share','free_share','total_mv','circ_mv','circ_mv_range'],
+        data_type='每日基本面',
+        engine=engine
     ):
         return
         
@@ -675,11 +683,12 @@ def daily_task():
         return
     
     if not save_to_database(
-        daily_k_df,
-        'a_stock_daily_k',
-        ['ts_code', 'trade_date'],
-        '日线行情',
-        engine
+        df=daily_k_df,
+        table_name='a_stock_daily_k',
+        conflict_columns=['ts_code', 'trade_date'],
+        update_columns=['open','high','low','close','pre_close','change','pct_chg','vol','amount'],
+        data_type='日线行情',
+        engine=engine
     ):
         return
 
@@ -691,76 +700,82 @@ def daily_task():
         return
     
     if not save_to_database(
-        index_dailybasic_df,
-        'a_stock_index_dailybasic',
-        ['index_code', 'trade_date'],
-        '指数每日指标',
-        engine
+        df=index_dailybasic_df,
+        table_name='a_stock_index_dailybasic',
+        conflict_columns=['index_code', 'trade_date'],
+        update_columns=['total_mv','float_mv','total_share','float_share','free_share','turnover_rate','turnover_rate_f','pe','pe_ttm','pb','index_name'],
+        data_type='指数每日指标',
+        engine=engine
     ):
         return
         
     # 计算指数市值得分
     logger.info(f"开始计算最近{n_days}天的指数市值得分...")
-    try:
-        index_score = calculate_index_marketvalue_score(index_dailybasic_df)
-        if not save_to_database(
-            index_score,
-            'a_stock_index_marketvalue_score',
-            ['index_code', 'trade_date'],
-            '指数市值得分',
-            engine
-        ):
-            return
-    except Exception as e:
-        logger.error(f"计算指数市值得分时出错: {e}")
+    index_score = calculate_index_marketvalue_score(index_dailybasic_df)
+    if index_score is None:
+        logger.error(f"无法获取完整的指数市值得分，请检查数据源")
         return
+
+    if not save_to_database(
+        df=index_score,
+        table_name='a_stock_index_marketvalue_score',
+        conflict_columns=['index_code', 'trade_date'],
+        update_columns=['index_name','流通市值(亿元)','流通市值分位数','换手率(%)','换手率分位数','平均价格'],
+        data_type='指数市值得分',
+        engine=engine
+    ):
+        return
+
 
     # 计算个股资金流向得分
     logger.info(f"开始计算最近{n_days}天的个股资金流向得分...")
-    try:
-        stock_rank = calculate_stock_score(moneyflow_df, basic_df, daily_k_df)
-        if not save_to_database(
-            stock_rank,
-            'a_stock_moneyflow_score',
-            ['ts_code', 'trade_date'],
-            '个股资金流向得分',
-            engine
-        ):
-            return
-    except Exception as e:
-        logger.error(f"计算个股资金流向得分时出错: {e}")
+    stock_rank = calculate_stock_score(moneyflow_df, basic_df, daily_k_df)
+    if stock_rank is None:
+        logger.error(f"无法获取完整的个股资金流向得分，请检查数据源")
+        return
+    
+    if not save_to_database(
+        df=stock_rank,
+        table_name='a_stock_moneyflow_score',
+        conflict_columns=['ts_code', 'trade_date'],
+        data_type='个股资金流向得分',
+        update_columns=['统计天数','排名','市值区间','特大单/市值','特大单/市值_Z','大单/市值','大单/市值_Z','中单/市值','中单/市值_Z','小单/市值','小单/市值_Z','换手率均值','换手率均值_Z','量比均值','量比均值_Z','成交额分位数','净流入分位数','综合得分'],
+        engine=engine
+    ):
         return
 
     # 计算行业资金流向得分
     logger.info(f"开始计算最近{n_days}天的行业资金流向得分...")
-    try:
-        industry_rank = calculate_industry_score(industry_moneyflow_df)
-        if not save_to_database(
-            industry_rank,
-            'a_stock_moneyflow_industry_score',
-            ['industry_code', 'trade_date'],
-            '行业资金流向得分',
-            engine
-        ):
-            return
-    except Exception as e:
-        logger.error(f"计算行业资金流向得分时出错: {e}")
+    industry_rank = calculate_industry_score(industry_moneyflow_df)
+    if industry_rank is None:
+        logger.error(f"无法获取完整的行业资金流向得分，请检查数据源")
+        return
+    
+    if not save_to_database(
+        df=industry_rank,
+        table_name='a_stock_moneyflow_industry_score',
+        conflict_columns=['industry_code', 'trade_date'],
+        update_columns=['industry','排名','净额(亿元)','净额分位数','过去5日分位数','过去4日分位数','过去3日分位数','过去2日分位数','过去1日分位数'],
+        data_type='行业资金流向得分',
+        engine=engine
+    ):
         return
 
     # 计算市场资金净流入分位数
     logger.info(f"开始计算最近{n_days}天的市场资金净流入分位数...")
-    try:
-        market_score = calculate_market_moneyflow_score(industry_moneyflow_df)
-        if not save_to_database(
-            market_score,
-            'a_stock_market_moneyflow_score',
-            ['trade_date'],
-            '市场资金净流入分位数',
-            engine
-        ):
-            return
-    except Exception as e:
-        logger.error(f"计算市场资金净流入分位数时出错: {e}")
+    market_score = calculate_market_moneyflow_score(industry_moneyflow_df)
+    if market_score is None:
+        logger.error(f"无法获取完整的行业资金流向得分，请检查数据源")
+        return
+    
+    if not save_to_database(
+        df=market_score,
+        table_name='a_stock_market_moneyflow_score',
+        conflict_columns=['trade_date'],
+        update_columns=['净值(亿元)','净值分位数'],
+        data_type='市场资金净流入分位数',
+        engine=engine
+    ):
         return
 
     logger.info(f"{today}的任务完成!!!")
