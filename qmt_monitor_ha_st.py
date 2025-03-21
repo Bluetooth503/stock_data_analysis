@@ -55,12 +55,12 @@ def check_signal_change(df):
         return 'SELL'
     return None
 
-# ================================= 检查是否已经发送过通知 =================================
-def check_if_notified(trade_time, ts_code):
-    with engine.connect() as conn:
-        query = "SELECT EXISTS (SELECT 1 FROM signal_notifications WHERE trade_time = :trade_time AND ts_code = :ts_code)"
-        result = conn.execute(text(query), {"trade_time": trade_time, "ts_code": ts_code}).scalar()
-        return bool(result)
+# # ================================= 检查是否已经发送过通知 =================================
+# def check_if_notified(trade_time, ts_code):
+#     with engine.connect() as conn:
+#         query = "SELECT EXISTS (SELECT 1 FROM signal_notifications WHERE trade_time = :trade_time AND ts_code = :ts_code)"
+#         result = conn.execute(text(query), {"trade_time": trade_time, "ts_code": ts_code}).scalar()
+#         return bool(result)
 
 # ================================= 添加新通知到数据库 =================================
 def add_notification_record(trade_time, ts_code, signal_type, price):
@@ -96,6 +96,48 @@ def calculate_signals(args):
             'params': stock_params
         }
     return None
+
+# ================================= 重试装饰器 =================================
+def retry_on_failure(max_retries=3, delay=1):
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            for attempt in range(max_retries):
+                try:
+                    result = func(*args, **kwargs)
+                    if isinstance(result, tuple):
+                        seq, success = result
+                        if success:
+                            return seq, True
+                    else:
+                        if result > 0:  # 对于直接返回seq的情况
+                            return result, True
+                    if attempt < max_retries - 1:
+                        logger.warning(f"尝试执行{func.__name__}失败，{attempt + 1}/{max_retries}次，等待{delay}秒后重试...")
+                        time.sleep(delay)
+                    else:
+                        logger.error(f"尝试执行{func.__name__}失败，已达到最大重试次数{max_retries}次")
+                        return -1, False
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"执行{func.__name__}出错: {str(e)}，{attempt + 1}/{max_retries}次，等待{delay}秒后重试...")
+                        time.sleep(delay)
+                    else:
+                        logger.error(f"执行{func.__name__}出错: {str(e)}，已达到最大重试次数{max_retries}次")
+                        return -1, False
+            return -1, False
+        return wrapper
+    return decorator
+
+# ================================= 交易函数 =================================
+@retry_on_failure(max_retries=3, delay=1)
+def place_buy_order(acc, code, volume, price):
+    seq = xt_trader.order_stock(acc, code, xtconstant.STOCK_BUY, volume, xtconstant.FIX_PRICE, price, 'strategy:ha_st', '买入')
+    return seq
+
+@retry_on_failure(max_retries=3, delay=1)
+def place_sell_order(acc, code, volume, price):
+    seq = xt_trader.order_stock(acc, code, xtconstant.STOCK_SELL, volume, xtconstant.FIX_PRICE, price, 'strategy:ha_st', '卖出')
+    return seq
 
 # ================================= 修改运行函数 =================================
 def run_market_analysis():
@@ -142,29 +184,34 @@ def run_market_analysis():
         盈亏比: {stock_params['profit_factor']}
         """
         
-        ### 检查是否已经通知过该组合 ###
-        if not check_if_notified(trade_time, code):
-            if signal == "BUY":
-                money_threshold = 10000  # 买入资金阈值，单位：元
-                order_volume = max(100, int(money_threshold / current_price) // 100 * 100)
-                seq = xt_trader.order_stock(acc, code, xtconstant.STOCK_BUY, order_volume, xtconstant.FIX_PRICE, current_price, 'strategy:ha_st', '买入')
-                if seq > 0:
-                    send_notification(subject, content)
-                    add_notification_record(trade_time, code, signal, current_price)
-                    logger.info(f"买入委托成功 - 股票: {code}, 价格: {current_price}, 数量: {order_volume}, 金额: {round(current_price * order_volume, 2)}元")
-                else:
-                    logger.info(f"买入委托失败 - 股票: {code}, 错误码: {seq}, 价格: {current_price}, 数量: {order_volume}")
+        
+        if signal == "BUY":
+            money_threshold = 10000  # 买入资金阈值，单位：元
+            order_volume = max(100, int(money_threshold / current_price) // 100 * 100)
+            seq, success = place_buy_order(acc, code, order_volume, current_price)
+            if success:
+                send_notification(subject, content)
+                add_notification_record(trade_time, code, signal, current_price)
+                logger.info(f"买入委托成功 - 股票: {code}, 价格: {current_price}, 数量: {order_volume}, 金额: {round(current_price * order_volume, 2)}元")
             else:
-                if code in positions_dict and positions_dict[code] > 0:
+                logger.error(f"买入委托失败(重试3次) - 股票: {code}, 错误码: {seq}, 价格: {current_price}, 数量: {order_volume}")
+        else:
+            if code in positions_dict and positions_dict[code] > 0:
+                try:
                     tick = xtdata.get_full_tick([code])
-                    sell_price = round((tick[code]["bidPrice"][0] if tick[code]["bidPrice"][0] != 0 else tick[code]["lastPrice"]) * 0.995, 2)
-                    seq = xt_trader.order_stock(acc, code, xtconstant.STOCK_SELL, positions_dict[code], xtconstant.FIX_PRICE, sell_price, 'strategy:ha_st', '卖出')
-                    if seq > 0:
-                        send_notification(subject, content)
-                        add_notification_record(trade_time, code, signal, current_price)
-                        logger.info(f"卖出委托成功 - 股票: {code}, 数量: {positions_dict[code]}")
+                    if code in tick and tick[code]:
+                        sell_price = round((tick[code]["bidPrice"][0] if tick[code]["bidPrice"][0] != 0 else tick[code]["lastPrice"]) * 0.995, 2)
+                        seq, success = place_sell_order(acc, code, positions_dict[code], sell_price)
+                        if success:
+                            send_notification(subject, content)
+                            add_notification_record(trade_time, code, signal, current_price)
+                            logger.info(f"卖出委托成功 - 股票: {code}, 数量: {positions_dict[code]}")
+                        else:
+                            logger.error(f"卖出委托失败(重试3次) - 股票: {code}, 错误码: {seq}")
                     else:
-                        logger.info(f"卖出委托失败 - 股票: {code}, 错误码: {seq}")
+                        logger.warning(f"无法获取股票{code}的tick数据")
+                except Exception as e:
+                    logger.error(f"处理股票{code}的tick数据时出错: {str(e)}")
 
 
 if __name__ == "__main__":
