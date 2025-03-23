@@ -346,3 +346,43 @@ def send_notification_pushplus(subject, content):
     except Exception as e:
         logger.error(f"微信通知发送失败: {str(e)}")
         return False
+
+def send_notification_wecom(subject, content):
+    """使用企业微信发送通知
+    Args:
+        subject: 通知标题
+        content: 通知内容
+    Returns:
+        bool: 是否发送成功
+    """
+    try:
+        # 从配置文件获取webhook地址
+        config = load_config()
+        webhook = config.get('wecom', 'webhook')
+            
+        # 准备消息内容
+        message = {
+            "msgtype": "markdown",
+            "markdown": {
+                "content": f"### {subject}\n{content}"
+            }
+        }
+        
+        # 发送请求
+        response = requests.post(webhook, json=message)
+        
+        # 检查响应
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('errcode') == 0:
+                return True
+            else:
+                logger.error(f"企业微信通知发送失败: {result.get('errmsg')}")
+                return False
+        else:
+            logger.error(f"企业微信通知发送失败，HTTP状态码: {response.status_code}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"企业微信通知发送失败: {str(e)}")
+        return False

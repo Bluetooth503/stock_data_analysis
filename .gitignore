@@ -183,3 +183,6 @@ xtquant
 *.xlsx
 *.png
 *.bk
+*.pkl
+*.pickle
+*.joblib
