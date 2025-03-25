@@ -779,7 +779,7 @@ def daily_task():
         return
 
     logger.info(f"{today}的任务完成!!!")
-    send_notification(f"{today}的daily task完成!!!", f"{today}的daily task完成!!!")
+    send_notification_wecom(f"{today}的daily task完成!!!", f"{today}的daily task完成!!!")
 
 def main():
     """主函数"""

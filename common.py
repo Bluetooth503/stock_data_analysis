@@ -15,15 +15,10 @@ pd.set_option('display.width', 180)
 import numpy as np
 import math
 from scipy import stats
-import matplotlib.pyplot as plt
-plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
-plt.rcParams['axes.unicode_minus'] = False    # 用来正常显示负号
-import matplotlib
 import configparser
 from tqdm import tqdm
 from typing import Dict, List, Optional, Callable
 import sys
-import talib
 import pandas_ta as ta
 from wxpusher import WxPusher
 import requests
@@ -271,27 +266,7 @@ def supertrend(df, length, multiplier):
     df['direction'] = supertrend_df[f'SUPERTd_{length}_{multiplier}.0']
     return df
 
-# 隐藏策略思路
-def ha_st(df, length, multiplier):
-    try:
-        ts_code = df['ts_code'].iloc[0] if 'ts_code' in df.columns else 'Unknown'
-        df.ta.ha(append=True)
-        ha_ohlc = {"HA_open": "ha_open", "HA_high": "ha_high", "HA_low": "ha_low", "HA_close": "ha_close"}
-        df.rename(columns=ha_ohlc, inplace=True)
-        supertrend_df = ta.supertrend(df['ha_high'], df['ha_low'], df['ha_close'], length, multiplier)
-        
-        if supertrend_df is None:
-            logger.error(f"股票{ts_code} Supertrend计算失败: length={length}, multiplier={multiplier}")
-            return None
-            
-        df['supertrend'] = supertrend_df[f'SUPERT_{length}_{multiplier}.0']
-        df['direction'] = supertrend_df[f'SUPERTd_{length}_{multiplier}.0']
-        df = df.round(3)
-        return df
-    except Exception as e:
-        ts_code = df['ts_code'].iloc[0] if 'ts_code' in df.columns else 'Unknown'
-        logger.error(f"股票{ts_code} ha_st计算错误: {str(e)}")
-        return None
+
 
 def send_notification(subject, content):
     """发送微信通知"""
@@ -386,3 +361,39 @@ def send_notification_wecom(subject, content):
     except Exception as e:
         logger.error(f"企业微信通知发送失败: {str(e)}")
         return False
+
+
+# ================================= 重试装饰器 =================================
+def retry_on_failure(max_retries=3, delay=1):
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            for attempt in range(max_retries):
+                try:
+                    result = func(*args, **kwargs)
+                    if isinstance(result, tuple):
+                        seq, success = result
+                        if success:
+                            return seq, True
+                    else:
+                        # 对于返回列表的情况（如get_positions），直接返回结果
+                        if isinstance(result, list):
+                            return result
+                        # 对于返回整数的情况
+                        if result > 0:
+                            return result, True
+                    if attempt < max_retries - 1:
+                        logger.warning(f"尝试执行{func.__name__}失败，{attempt + 1}/{max_retries}次，等待{delay}秒后重试...")
+                        time.sleep(delay)
+                    else:
+                        logger.error(f"尝试执行{func.__name__}失败，已达到最大重试次数{max_retries}次")
+                        return -1, False
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"执行{func.__name__}出错: {str(e)}，{attempt + 1}/{max_retries}次，等待{delay}秒后重试...")
+                        time.sleep(delay)
+                    else:
+                        logger.error(f"执行{func.__name__}出错: {str(e)}，已达到最大重试次数{max_retries}次")
+                        return -1, False
+            return -1, False
+        return wrapper
+    return decorator
