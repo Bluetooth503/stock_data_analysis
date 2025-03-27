@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from contextlib import contextmanager
 from common import *
 from multiprocessing import Pool
 import schedule
@@ -9,23 +10,68 @@ from xtquant.xttype import StockAccount
 xtdata.enable_hello = False
 
 
-# ================================= QMT初始化 =================================
-def init_trader():
-    path = r'E:\国金证券QMT交易端\userdata_mini'
-    session_id = int(time.time())
-    xt_trader = XtQuantTrader(path, session_id)
-    acc = StockAccount(config['trader']['account'])
-    xt_trader.start()
-    xt_trader.connect()
-    time.sleep(3)
-    account_status = xt_trader.query_account_status()
-    logger.info(f"账户状态: {account_status}")
-    return xt_trader, acc
+class QMTTrader:
+    """封装QMT交易相关功能"""
+    def __init__(self, config):
+        self.config = config
+        self.engine = create_engine(get_pg_connection_string(config), pool_size=10, max_overflow=20)
+        self.xt_trader = None
+        self.acc = None
+        
+    def init_trader(self):
+        """初始化QMT交易接口"""
+        path = r'E:\国金证券QMT交易端\userdata_mini'
+        session_id = int(time.time())
+        self.xt_trader = XtQuantTrader(path, session_id)
+        self.acc = StockAccount(self.config['trader']['account'])
+        self.xt_trader.start()
+        self.xt_trader.connect()
+        time.sleep(3)
+        account_status = self.xt_trader.query_account_status()
+        logger.info(f"账户状态: {account_status}")
+        return self.xt_trader, self.acc
+    
+    @contextmanager
+    def db_session(self):
+        """数据库连接上下文管理"""
+        conn = self.engine.connect()
+        try:
+            yield conn
+        finally:
+            conn.close()
 
-# ================================= 读取配置文件 =================================
+    @retry_on_failure(max_retries=3, delay=1)
+    def get_positions(self):
+        """查询持仓信息"""
+        positions = self.xt_trader.query_stock_positions(self.acc)
+        return [pos for pos in positions if pos.volume > 0] if positions else []
+
+    @retry_on_failure(max_retries=3, delay=1)
+    def place_order(self, code, signal_type, volume, price):
+        """统一订单方法"""
+        trade_type = xtconstant.STOCK_BUY if signal_type == 'BUY' else xtconstant.STOCK_SELL
+        result = self.xt_trader.order_stock(
+            self.acc, code, trade_type, volume,
+            xtconstant.FIX_PRICE, price, 
+            'strategy:ha_st', signal_type
+        )
+        return result, result is not None  # 返回订单编号和是否成功
+
+    def _send_notification(self, subject, content):
+        """统一发送通知"""
+        send_notification_wecom(subject, content)
+    
+    def _log_order(self, code, signal_type, price, volume=0, success=True):
+        """统一记录订单日志"""
+        log_msg = f"{'买入' if signal_type == 'BUY' else '卖出'}委托{'成功' if success else '失败'} - "
+        log_msg += f"股票: {code}, 价格: {price}"
+        if volume > 0:
+            log_msg += f", 数量: {volume}, 金额: {round(price * volume, 2)}元"
+        logger.info(log_msg) if success else logger.error(log_msg)
+
+# ================================= 初始化配置 =================================
 config = load_config()
-engine = create_engine(get_pg_connection_string(config), pool_size=10, max_overflow=20)
-
+trader = QMTTrader(config)
 
 # ================================= 计算指标 =================================
 def ha_st(df, length, multiplier):
@@ -34,12 +80,7 @@ def ha_st(df, length, multiplier):
         df.ta.ha(append=True)
         ha_ohlc = {"HA_open": "ha_open", "HA_high": "ha_high", "HA_low": "ha_low", "HA_close": "ha_close"}
         df.rename(columns=ha_ohlc, inplace=True)
-        supertrend_df = ta.supertrend(df['ha_high'], df['ha_low'], df['ha_close'], length, multiplier)
-        
-        if supertrend_df is None:
-            logger.error(f"股票{ts_code} Supertrend计算失败: length={length}, multiplier={multiplier}")
-            return None
-            
+        supertrend_df = ta.supertrend(df['ha_high'], df['ha_low'], df['ha_close'], length, multiplier) 
         df['supertrend'] = supertrend_df[f'SUPERT_{length}_{multiplier}.0']
         df['direction'] = supertrend_df[f'SUPERTd_{length}_{multiplier}.0']
         df = df.round(3)
@@ -60,8 +101,8 @@ def get_top_stocks(positions):
     ORDER BY ts_code DESC
     """)
 
-    #### 执行SQL查询 ####
-    with engine.connect() as conn:
+    #### 使用封装后的数据库会话 ####
+    with trader.db_session() as conn:
         df = pd.read_sql(query, conn)
     logger.info(f"监控标的数量: {len(df)}")
     return df
@@ -77,16 +118,9 @@ def check_signal_change(df):
         return 'SELL'
     return None
 
-# # ================================= 检查是否已经发送过通知 =================================
-# def check_if_notified(trade_time, ts_code):
-#     with engine.connect() as conn:
-#         query = "SELECT EXISTS (SELECT 1 FROM signal_notifications WHERE trade_time = :trade_time AND ts_code = :ts_code)"
-#         result = conn.execute(text(query), {"trade_time": trade_time, "ts_code": ts_code}).scalar()
-#         return bool(result)
-
 # ================================= 添加新通知到数据库 =================================
 def add_notification_record(trade_time, ts_code, signal_type, price):
-    with engine.connect() as conn:
+    with trader.db_session() as conn:
         with conn.begin():
             query = """
             INSERT INTO signal_notifications (trade_time, ts_code, signal_type, price) 
@@ -119,23 +153,6 @@ def calculate_signals(args):
         }
     return None
 
-
-# ================================= 交易函数 =================================
-@retry_on_failure(max_retries=3, delay=1)
-def place_buy_order(acc, code, volume, price):
-    seq = xt_trader.order_stock(acc, code, xtconstant.STOCK_BUY, volume, xtconstant.FIX_PRICE, price, 'strategy:ha_st', '买入')
-    return seq
-
-@retry_on_failure(max_retries=3, delay=1)
-def place_sell_order(acc, code, volume, price):
-    seq = xt_trader.order_stock(acc, code, xtconstant.STOCK_SELL, volume, xtconstant.FIX_PRICE, price, 'strategy:ha_st', '卖出')
-    return seq
-
-@retry_on_failure(max_retries=3, delay=1)
-def get_positions(acc):
-    positions = xt_trader.query_stock_positions(acc)
-    return positions if positions else []
-
 # ================================= 修改运行函数 =================================
 def run_market_analysis():
     logger.info(f"开始监控市场数据... 当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -158,7 +175,7 @@ def run_market_analysis():
     valid_signals = [r for r in signal_results if r is not None]
     
     #### 获取最新持仓 ####
-    positions = get_positions(acc)
+    positions = trader.get_positions()
     positions_dict = {pos.stock_code: pos.volume for pos in positions}
     
     #### 串行处理交易操作 ####
@@ -185,7 +202,7 @@ def run_market_analysis():
         if signal == "BUY":
             money_threshold = 10000  # 买入资金阈值，单位：元
             order_volume = max(100, int(money_threshold / current_price) // 100 * 100)
-            seq, success = place_buy_order(acc, code, order_volume, current_price)
+            seq, success = trader.place_order(code, "BUY", order_volume, current_price)
             if success:
                 send_notification_wecom(subject, content)
                 add_notification_record(trade_time, code, signal, current_price)
@@ -197,7 +214,7 @@ def run_market_analysis():
                 tick = xtdata.get_full_tick([code])
                 if code in tick and tick[code]:
                     sell_price = round((tick[code]["bidPrice"][0] if tick[code]["bidPrice"][0] != 0 else tick[code]["lastPrice"]) * 0.995, 2)
-                    seq, success = place_sell_order(acc, code, positions_dict[code], sell_price)
+                    seq, success = trader.place_order(code, "SELL", positions_dict[code], sell_price)
                     if success:
                         send_notification_wecom(subject, content)
                         add_notification_record(trade_time, code, signal, current_price)
@@ -209,14 +226,14 @@ def run_market_analysis():
 
 
 if __name__ == "__main__":
-    #### 在主进程中初始化交易接口 ####
-    xt_trader, acc = init_trader()
+    #### 初始化交易接口 ####
+    trader.init_trader()
     
-    #### 获取股票列表 ####
-    positions = get_positions(acc)
+    #### 获取持仓并生成监控列表 ####
+    positions = trader.get_positions()
     top_stocks = get_top_stocks(positions)
     code_list = top_stocks['ts_code'].tolist()
-    
+        
     #### 下载基础周期数据 ####
     for code in code_list:
         xtdata.download_history_data(code, period='5m', incrementally=True)
