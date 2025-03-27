@@ -186,3 +186,5 @@ xtquant
 *.pkl
 *.pickle
 *.joblib
+*.json
+*.parquet

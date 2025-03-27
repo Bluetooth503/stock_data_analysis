@@ -26,25 +26,6 @@ N_CANDIDATES = 200  # 每次迭代生成的候选点数量
 UCB_KAPPA = 1.5  # UCB采集函数的置信区间参数
 
 # ================================= 函数定义 =================================
-def heikin_ashi(df):
-    df.ta.ha(append=True)
-    ha_ohlc = {"HA_open": "ha_open", "HA_high": "ha_high", "HA_low": "ha_low", "HA_close": "ha_close"}
-    df.rename(columns=ha_ohlc, inplace=True)
-    return df
-
-def supertrend(df, length, multiplier):
-    '''direction=1上涨，-1下跌'''
-    length = int(round(length))
-    multiplier = float(multiplier)
-    
-    supertrend_df = ta.supertrend(df['ha_high'], df['ha_low'], df['ha_close'], length, multiplier)
-    supert_col = f'SUPERT_{length}_{multiplier}'
-    direction_col = f'SUPERTd_{length}_{multiplier}'
-    
-    df['supertrend'] = supertrend_df[supert_col]
-    df['direction'] = supertrend_df[direction_col]
-    return df
-
 class HeikinAshiData(bt.feeds.PandasData):
     lines = ('direction', 'supertrend',)
     params = (
@@ -103,8 +84,7 @@ class SuperTrendEstimator(BaseEstimator):
             self.df = X
             
         df = self.df.copy()
-        df = heikin_ashi(df)
-        df = supertrend(df, self.supertrend_period, self.supertrend_multiplier)
+        df = ha_st_pandas_ta(df, self.supertrend_period, self.supertrend_multiplier)
         
         cerebro = bt.Cerebro()
         data = HeikinAshiData(dataname=df)
@@ -126,8 +106,7 @@ class SuperTrendEstimator(BaseEstimator):
 
 def run_backtest(df, period, multiplier):
     """运行回测并返回收益序列"""
-    df = heikin_ashi(df)
-    df = supertrend(df, period, multiplier)
+    df = ha_st_pandas_ta(df, period, multiplier)
     
     cerebro = bt.Cerebro()
     data = HeikinAshiData(dataname=df)
@@ -220,14 +199,16 @@ def optimize_stock(stock_code):
         daily_returns.name = 'SuperTrend'
         
         # 获取基准数据
+        start_date_fmt = START_DATE.replace('-', '')
+        end_date_fmt = END_DATE.replace('-', '')
         benchmark_sql = """
         SELECT trade_date AS trade_time, close 
         FROM a_index_1day_kline_baostock 
         WHERE ts_code = '000300.SH' 
-        AND trade_date BETWEEN %s AND %s 
+        AND trade_date >= %s AND trade_date <= %s 
         ORDER BY trade_date
         """
-        benchmark_df = pd.read_sql(benchmark_sql, engine, params=(START_DATE, END_DATE))
+        benchmark_df = pd.read_sql(benchmark_sql, engine, params=(start_date_fmt, end_date_fmt))
         benchmark_df['trade_time'] = pd.to_datetime(benchmark_df['trade_time'])
         benchmark_df.set_index('trade_time', inplace=True)
         
