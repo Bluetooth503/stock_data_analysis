@@ -5,8 +5,6 @@ from datetime import datetime
 import schedule
 import configparser
 import pandas as pd
-import numpy as np
-import talib
 import requests
 from multiprocessing import Pool
 from xtquant import xtdata
@@ -229,6 +227,7 @@ class QMTTrader:
         self.acc = None
         self.trading_config = config.trading_config
         self.processed_klines_file = "processed_klines.txt"
+        self.subscribed_codes = {}  # 改为字典，存储 code: seq 的映射
         
     def _load_processed_klines(self):
         """从文件加载已处理的K线记录"""
@@ -282,7 +281,46 @@ class QMTTrader:
     @retry_on_failure(max_retries=3, delay=1)
     def get_stock_tick(self, code):
         """获取股票tick数据"""
-        return xtdata.get_full_tick([code])
+        tick_data = xtdata.get_full_tick([code])
+        if isinstance(tick_data, dict) and code in tick_data:
+            return tick_data
+        return None
+
+    def subscribe_stocks(self, code_list):
+        """订阅股票行情"""
+        try:
+            for code in code_list:
+                # 订阅并保存返回的订阅号
+                seq = xtdata.subscribe_quote(code, '5m')
+                if seq > 0:  # 订阅成功
+                    self.subscribed_codes[code] = seq
+                    print(f"订阅 {code} 5分钟数据成功，订阅号: {seq}")
+                else:
+                    print(f"订阅 {code} 失败")
+            return True
+        except Exception as e:
+            print(f"订阅股票行情失败: {e}")
+            return False
+
+    def unsubscribe_stocks(self):
+        """取消所有股票订阅"""
+        try:
+            # 逐个取消订阅
+            for code, seq in list(self.subscribed_codes.items()):
+                try:
+                    # 使用订阅号取消订阅
+                    xtdata.unsubscribe_quote(seq)
+                    print(f"取消订阅 {code}(订阅号:{seq}) 成功")
+                    del self.subscribed_codes[code]
+                except Exception as e:
+                    print(f"取消订阅 {code}(订阅号:{seq}) 失败: {e}")
+            
+            # 以防万一，清空订阅字典
+            self.subscribed_codes.clear()
+            return True
+        except Exception as e:
+            print(f"取消订阅过程中出错: {e}")
+            return False
 
     def process_signal(self, code, signal, trade_time, current_price, stock_params):
         """处理交易信号"""
@@ -386,21 +424,39 @@ def calculate_signals(args):
 
 def run_market_analysis():
     """运行市场分析"""
-    # 每天第一次运行时(9:30)清空记录
-    if datetime.now().strftime('%H%M') == '0930':
+    # 每天第一次运行时清空记录
+    if datetime.now().strftime('%H%M') == '0900':
         trader.clear_processed_klines()
     
-    print(f"开始监控市场数据... 当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"\n开始监控市场数据... 当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     # 获取合成周期数据
     df = xtdata.get_market_data_ex([], code_list, period='30m', start_time='20240101')
     
     # 准备并行计算参数
     calc_args = []
+    buy_status_stocks = []
+    sell_status_stocks = []
+    
+    # 计算每个股票的状态并打印
+    print("\n当前股票状态:")
     for code in code_list:
         if code in df:
             stock_params = top_stocks[top_stocks['ts_code'] == code].iloc[0].to_dict()
-            calc_args.append((code, df[code], stock_params))
+            stock_data = df[code].copy()
+            # 计算指标
+            stock_data = ha_st_pine(stock_data, stock_params['period'], stock_params['multiplier'])
+            # 获取最新状态并记录
+            if stock_data['direction'].iloc[-1] == 1:
+                buy_status_stocks.append(f"{stock_params['name']}({code})")
+            else:
+                sell_status_stocks.append(f"{stock_params['name']}({code})")
+            
+            calc_args.append((code, stock_data, stock_params))
+    
+    print(f"需要持仓的股票({len(buy_status_stocks)}只)：{', '.join(buy_status_stocks)}")
+    # print(f"卖出状态的股票({len(sell_status_stocks)}只)：{', '.join(sell_status_stocks)}")
+    print("-" * 80)
     
     # 并行计算信号
     with Pool(processes=2) as pool:
@@ -421,6 +477,7 @@ def run_market_analysis():
 
 # ================================= 主程序 =================================
 if __name__ == "__main__":
+    trader = None
     try:
         # 初始化配置
         config = Config()
@@ -434,19 +491,11 @@ if __name__ == "__main__":
         top_stocks = get_top_stocks()
         code_list = top_stocks['ts_code'].tolist()
             
-        # 下载基础周期数据
-        for code in code_list:
-            xtdata.download_history_data(code, period='5m', incrementally=True)
-            xtdata.subscribe_quote(code, '5m')
-            print(f"订阅 {code} 5分钟数据成功")
+        # 订阅行情数据
+        trader.subscribe_stocks(code_list)
 
         # 设置定时任务
-        for hour in range(9, 12):   # 09:30 ~ 11:30
-            for minute in [30] if hour == 9 else [0, 30]:  
-                schedule_time = f"{hour:02d}:{minute:02d}:05"
-                schedule.every().day.at(schedule_time).do(run_market_analysis)
-
-        for hour in range(13, 15):  # 13:00 ~ 15:00
+        for hour in range(9, 16):   # 09:30 ~ 11:30
             for minute in [0, 30]:
                 schedule_time = f"{hour:02d}:{minute:02d}:05"
                 schedule.every().day.at(schedule_time).do(run_market_analysis)
@@ -460,11 +509,18 @@ if __name__ == "__main__":
                 error_msg = f"程序运行出错: {str(e)}"
                 print(error_msg)
                 send_notification_wecom("程序运行错误", error_msg)
-                time.sleep(5)  # 出错后等待5秒再继续
+                time.sleep(5)
                 continue
 
+    except KeyboardInterrupt:
+        print("\n检测到退出信号，正在清理...")
+        if trader:
+            trader.unsubscribe_stocks()
+        print("程序已安全退出")
     except Exception as e:
         error_msg = f"程序初始化失败: {str(e)}"
         print(error_msg)
         send_notification_wecom("程序初始化错误", error_msg)
-        raise  # 初始化失败时抛出异常
+        if trader:
+            trader.unsubscribe_stocks()
+        raise
