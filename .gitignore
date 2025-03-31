@@ -188,3 +188,4 @@ xtquant
 *.joblib
 *.json
 *.parquet
+*.txt
