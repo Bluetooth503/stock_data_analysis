@@ -24,36 +24,49 @@ def retry_on_failure(max_retries=3, delay=1):
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
+            last_exception = None
             for attempt in range(max_retries):
                 try:
                     result = func(*args, **kwargs)
+                    
                     # 处理tick数据返回结果
-                    if isinstance(result, dict) and args[0][0] in result and result[args[0][0]]:
+                    if isinstance(result, dict):
                         return result
-                    # 处理其他返回结果
+                        
+                    # 处理订单结果
                     if isinstance(result, tuple):
                         seq, success = result
                         if success:
                             return seq, True
-                    else:
-                        if isinstance(result, list):
-                            return result
-                        if result > 0:
-                            return result, True
+                            
+                    # 处理列表结果
+                    if isinstance(result, list):
+                        return result
+                        
+                    # 处理数值结果
+                    if result is not None and result > 0:
+                        return result
+                        
+                    # 如果结果为空或无效，进行重试
                     if attempt < max_retries - 1:
-                        print(f"尝试执行{func.__name__}失败，{attempt + 1}/{max_retries}次，等待{delay}秒后重试...")
+                        print(f"执行{func.__name__}返回无效结果，{attempt + 1}/{max_retries}次，等待{delay}秒后重试...")
                         time.sleep(delay)
                     else:
-                        print(f"尝试执行{func.__name__}失败，已达到最大重试次数{max_retries}次")
-                        return -1, False
+                        print(f"执行{func.__name__}返回无效结果，已达到最大重试次数{max_retries}次")
+                        return None
+                        
                 except Exception as e:
+                    last_exception = e
                     if attempt < max_retries - 1:
                         print(f"执行{func.__name__}出错: {str(e)}，{attempt + 1}/{max_retries}次，等待{delay}秒后重试...")
                         time.sleep(delay)
                     else:
                         print(f"执行{func.__name__}出错: {str(e)}，已达到最大重试次数{max_retries}次")
-                        return -1, False
-            return -1, False
+                        return None
+                        
+            # 如果所有重试都失败，返回None
+            return None
+            
         return wrapper
     return decorator
 

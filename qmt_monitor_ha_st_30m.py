@@ -104,7 +104,7 @@ class QMTTrader:
         )
         return result, result is not None
 
-    @retry_on_failure(max_retries=3, delay=1)
+    @retry_on_failure(max_retries=3, delay=2)
     def get_stock_tick(self, code):
         """获取股票tick数据"""
         tick_data = xtdata.get_full_tick([code])
@@ -116,6 +116,7 @@ class QMTTrader:
         """订阅股票行情"""
         for code in code_list:
             # 订阅5分钟K线数据
+            xtdata.download_history_data(code, period='5m', start_time='20240101')
             kline_seq = xtdata.subscribe_quote(code, '5m')
             if kline_seq > 0:  # 订阅成功
                 self.subscribed_codes[f"{code}_kline"] = kline_seq
