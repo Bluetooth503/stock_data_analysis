@@ -22,47 +22,111 @@ FACTOR_WEIGHTS = {
     'transaction_growth': 0.1
 }
 
-BUFFER_SIZE = 1000  # 缓冲区大小
-DELAY_THRESHOLD = 4  # 延迟处理阈值（秒）
+# 优化缓冲区配置
+BUFFER_SIZE = 50000  # 缓冲区大小，约30秒的数据量
+DELAY_THRESHOLD = 6  # 延迟处理阈值（秒），考虑网络延迟
 MISSING_DATA_THRESHOLD = 6  # 数据缺失判定阈值（秒）
 
 class TickBuffer:
     """用于处理tick数据的缓冲区，确保时间顺序"""
-    def __init__(self, buffer_size: int = 1000):
+    def __init__(self, buffer_size: int = 50000):
         self.buffer = []  # 优先队列
         self.buffer_size = buffer_size
         self.last_processed_time = 0
+        self.stock_counts = defaultdict(int)  # 记录每个股票的tick数量
+        self.total_ticks = 0  # 记录总tick数量
     
     def add_tick(self, timestamp: int, stock_code: str, tick_data: dict):
         """添加tick数据到缓冲区"""
-        # 确保时间戳是整数
-        if isinstance(timestamp, int) and timestamp > 1000000000000:  # 如果是毫秒时间戳
-            timestamp = timestamp // 1000  # 转换为秒
+        try:
+            # 确保时间戳是整数
+            if isinstance(timestamp, int) and timestamp > 1000000000000:  # 如果是毫秒时间戳
+                timestamp = timestamp // 1000  # 转换为秒
+                
+            # 使用元组作为堆的元素，第一个元素是时间戳用于排序
+            entry = (timestamp, len(self.buffer), stock_code, tick_data)  # 添加计数器作为第二排序键
+            heapq.heappush(self.buffer, entry)
             
-        # 使用元组作为堆的元素，第一个元素是时间戳用于排序
-        entry = (timestamp, len(self.buffer), stock_code, tick_data)  # 添加计数器作为第二排序键
-        heapq.heappush(self.buffer, entry)
-        
-        # 如果缓冲区过大，处理最早的数据
-        while len(self.buffer) > self.buffer_size:
-            self.process_earliest_tick()
+            # 更新计数
+            self.stock_counts[stock_code] += 1
+            self.total_ticks += 1
+            
+            # 如果缓冲区过大，处理最早的数据
+            while self.total_ticks > self.buffer_size:
+                self.process_earliest_tick()
+                
+        except Exception as e:
+            print(f"添加tick数据出错: {e}")
+            traceback.print_exc()
     
     def process_earliest_tick(self) -> Tuple[int, str, dict]:
         """处理最早的tick数据"""
         if not self.buffer:
             return None
-        timestamp, _, stock_code, tick_data = heapq.heappop(self.buffer)
-        self.last_processed_time = timestamp
-        return timestamp, stock_code, tick_data
+        try:
+            timestamp, _, stock_code, tick_data = heapq.heappop(self.buffer)
+            self.last_processed_time = timestamp
+            self.stock_counts[stock_code] -= 1
+            self.total_ticks -= 1
+            return timestamp, stock_code, tick_data
+        except Exception as e:
+            print(f"处理tick数据出错: {e}")
+            traceback.print_exc()
+            return None
     
-    def get_ready_ticks(self, current_time: int, delay_threshold: int = 2) -> List[Tuple[int, str, dict]]:
+    def get_ready_ticks(self, current_time: int, delay_threshold: int = 6) -> List[Tuple[int, str, dict]]:
         """获取已经可以安全处理的tick数据"""
         ready_ticks = []
-        while self.buffer and self.buffer[0][0] <= current_time - delay_threshold:
-            tick = self.process_earliest_tick()
-            if tick:  # 确保返回的数据不是None
-                ready_ticks.append(tick)
-        return ready_ticks
+        try:
+            while self.buffer and self.buffer[0][0] <= current_time - delay_threshold:
+                tick = self.process_earliest_tick()
+                if tick:  # 确保返回的数据不是None
+                    ready_ticks.append(tick)
+            return ready_ticks
+        except Exception as e:
+            print(f"获取ready ticks出错: {e}")
+            traceback.print_exc()
+            return ready_ticks
+            
+    def get_buffer_stats(self) -> dict:
+        """获取缓冲区统计信息"""
+        try:
+            current_time = int(time.time())
+            stats = {
+                'total_ticks': self.total_ticks,
+                'buffer_size': self.buffer_size,
+                'buffer_usage': self.total_ticks / self.buffer_size,  # 缓冲区使用率
+                'stock_counts': dict(self.stock_counts),
+                'oldest_tick_time': self.buffer[0][0] if self.buffer else None,
+                'newest_tick_time': self.buffer[-1][0] if self.buffer else None,
+                'processing_delay': current_time - self.last_processed_time if self.last_processed_time > 0 else 0,
+                'avg_stock_ticks': self.total_ticks / len(self.stock_counts) if self.stock_counts else 0,
+                'max_stock_ticks': max(self.stock_counts.values()) if self.stock_counts else 0,
+                'min_stock_ticks': min(self.stock_counts.values()) if self.stock_counts else 0,
+                'buffer_age': current_time - self.buffer[0][0] if self.buffer else 0,  # 缓冲区中最老数据的年龄
+                'tick_processing_rate': self.total_ticks / (current_time - self.last_processed_time) if self.last_processed_time > 0 else 0
+            }
+            
+            # 添加警告信息
+            warnings = []
+            if stats['buffer_usage'] > 0.8:
+                warnings.append("缓冲区使用率超过80%")
+            if stats['processing_delay'] > DELAY_THRESHOLD:
+                warnings.append(f"处理延迟({stats['processing_delay']}秒)超过阈值({DELAY_THRESHOLD}秒)")
+            if stats['buffer_age'] > 10:
+                warnings.append(f"缓冲区中存在超过10秒的旧数据")
+            
+            stats['warnings'] = warnings
+            return stats
+            
+        except Exception as e:
+            print(f"获取缓冲区统计信息出错: {e}")
+            traceback.print_exc()
+            return {
+                'error': str(e),
+                'total_ticks': self.total_ticks,
+                'buffer_size': self.buffer_size
+            }
 
 class StockScorer:
     # 行情数据相关的常量
@@ -223,38 +287,67 @@ class StockScorer:
 
     def _should_aggregate_1min(self, current_time):
         """判断是否应该进行1分钟聚合"""
-        dt = datetime.fromtimestamp(current_time)
-        # 放宽条件，允许在每分钟的前55秒内触发
-        return dt.second < 55
+        try:
+            dt = datetime.fromtimestamp(current_time)
+            last_minute = current_time - 60  # 上一分钟的开始时间
+            
+            # 检查是否已经处理过上一分钟的数据
+            if hasattr(self, '_last_aggregate_time'):
+                if self._last_aggregate_time >= last_minute:
+                    return False
+            
+            # 检查是否满足延迟条件
+            if current_time - last_minute <= DELAY_THRESHOLD:
+                return False
+                
+            # 更新最后聚合时间
+            self._last_aggregate_time = last_minute
+            return True
+            
+        except Exception as e:
+            print(f"检查1分钟聚合条件时出错: {e}")
+            traceback.print_exc()
+            return False
 
     def _should_calculate_score(self, current_time):
         """判断是否应该计算得分"""
-        # 获取当前时间
-        current_dt = datetime.fromtimestamp(current_time)
-        current_hour = current_dt.hour
-        current_minute = current_dt.minute
-        current_second = current_dt.second
-        
-        # 更精确的交易时间判断
-        is_trading_time = (
-            (current_hour == 9 and current_minute >= 30) or  # 9:30-10:00
-            (current_hour > 9 and current_hour < 11) or      # 10:00-11:00
-            (current_hour == 11 and current_minute <= 30) or # 11:00-11:30
-            (current_hour >= 13 and current_hour < 15)       # 13:00-15:00
-        )
-        
-        if not is_trading_time:
+        try:
+            # 获取当前时间
+            current_dt = datetime.fromtimestamp(current_time)
+            current_hour = current_dt.hour
+            current_minute = current_dt.minute
+            
+            # 更精确的交易时间判断
+            is_trading_time = (
+                (current_hour == 9 and current_minute >= 30) or  # 9:30-10:00
+                (current_hour > 9 and current_hour < 11) or      # 10:00-11:00
+                (current_hour == 11 and current_minute <= 30) or # 11:00-11:30
+                (current_hour >= 13 and current_hour < 15)       # 13:00-15:00
+            )
+            
+            if not is_trading_time:
+                return False
+            
+            # 计算上一个5分钟的开始时间
+            last_5min = current_time - (current_time % 300)  # 向下取整到最近的5分钟
+            
+            # 检查是否已经处理过上一个5分钟的数据
+            if hasattr(self, '_last_score_time'):
+                if self._last_score_time >= last_5min:
+                    return False
+            
+            # 检查是否满足延迟条件
+            if current_time - last_5min <= DELAY_THRESHOLD:
+                return False
+            
+            # 更新最后计算时间
+            self._last_score_time = last_5min
+            return True
+            
+        except Exception as e:
+            print(f"检查计算得分条件时出错: {e}")
+            traceback.print_exc()
             return False
-        
-        # 每5分钟计算一次
-        if current_minute % 5 == 0:
-            # 放宽条件，允许在每分钟的前15秒内触发
-            if current_second < 15:
-                # 确保同一个5分钟内不会重复计算
-                if current_time - self.last_score_time >= 240:  # 至少间隔4分钟
-                    self.last_score_time = current_time
-                    return True
-        return False
     
     def _aggregate_1min_data(self, stock_code: str):
         """优化的1分钟K线聚合"""
@@ -479,9 +572,14 @@ class StockScorer:
         self._process_single_tick(current_time, stock_code, filled_data)
 
     def monitor_data_quality(self):
-        """监控数据质量"""
+        """监控数据质量，每自然分钟统计一次"""
         current_time = int(time.time())
+        current_dt = datetime.fromtimestamp(current_time)
         
+        # 只在每分钟的0秒时进行统计
+        if current_dt.second != 0:
+            return
+            
         # 获取上一分钟的时间范围
         start_time = current_time - 60
         end_time = current_time
@@ -501,6 +599,8 @@ class StockScorer:
         
         # 创建字典的副本进行遍历
         min1_data_copy = dict(self.min1_data)
+        quality_report = []
+        
         for stock_code in min1_data_copy:
             # 计算每分钟应该收到的数据次数
             expected_ticks = self.QUALITY_CHECK_INTERVAL // self.TICK_INTERVAL
@@ -514,8 +614,25 @@ class StockScorer:
             # 检查是否长时间未更新
             last_update = self.last_update_time.get(stock_code, 0)
             time_since_last_update = current_time - last_update
-            if time_since_last_update > self.MISSING_THRESHOLD:
-                pass  # 移除警告日志
+            
+            # 记录质量报告
+            quality_report.append({
+                'stock_code': stock_code,
+                'expected_ticks': expected_ticks,
+                'actual_ticks': actual_ticks,
+                'missing_rate': missing_rate,
+                'time_since_last_update': time_since_last_update
+            })
+        
+        # 输出质量报告
+        if quality_report:
+            print(f"\n=== 数据质量报告 ({current_dt.strftime('%H:%M')}) ===")
+            print("股票代码  预期数据  实际数据  缺失率  最后更新(秒)")
+            print("-" * 50)
+            for report in quality_report:
+                print(f"{report['stock_code']:<8} {report['expected_ticks']:>8} {report['actual_ticks']:>8} "
+                      f"{report['missing_rate']:>7.2%} {report['time_since_last_update']:>8}")
+            print("-" * 50)
 
     def cleanup_stale_data(self):
         """定期清理过期数据"""
@@ -571,10 +688,9 @@ class StockScorer:
                 self.subscribed_codes.add(code)
                 self.subscription_seqs[code] = seq
                 # 初始化该股票的数据结构
-                if code not in self.price_history:
-                    self.price_history[code] = np.zeros(30, dtype=np.float32)
-                if code not in self.volume_history:
-                    self.volume_history[code] = np.zeros(30, dtype=np.float32)
+                self.price_history[code] = np.zeros(30, dtype=np.float32)  # 使用float32减少内存
+                self.volume_history[code] = np.zeros(30, dtype=np.float32)
+                self.current_idx[code] = 0  # 初始化循环数组的当前索引
                 
             print(f"成功订阅 {len(valid_codes)} 只股票的行情，订阅号: {seq}")
             return seq
