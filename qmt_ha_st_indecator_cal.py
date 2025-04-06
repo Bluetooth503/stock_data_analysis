@@ -20,7 +20,7 @@ ts_code = f"{code}.SH" if code.startswith('6') else f"{code}.SZ"
 
 
 # 读取配置
-df_parm = pd.read_csv('monitor_stocks.csv', encoding='utf-8')
+df_parm = pd.read_csv('qmt_monitor_stocks_calmar.csv', encoding='utf-8')
 df_parm = df_parm[df_parm['ts_code'] == ts_code]
 
 # 计算Heikin-Ashi和Supertrend指标
@@ -114,7 +114,7 @@ def ha_st_pine(df, length, multiplier):
     
     return df
 
-xtdata.download_history_data(ts_code, period='5m', incrementally=True)
+xtdata.download_history_data(ts_code, period='5m', start_time='20240101')
 xtdata.subscribe_quote(ts_code, '5m')
 df = xtdata.get_market_data_ex([], [ts_code], period='30m', start_time='20240101')
 df = df[ts_code]

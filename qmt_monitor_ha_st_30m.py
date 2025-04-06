@@ -1,17 +1,10 @@
 # -*- coding: utf-8 -*-
-import os
-import time
-from datetime import datetime
-import schedule
-import configparser
-import pandas as pd
-import requests
+from qmt_common import *
 from multiprocessing import Pool
 from xtquant import xtdata
 from xtquant.xttrader import XtQuantTrader
 from xtquant.xttype import StockAccount
 from xtquant import xtconstant
-from functools import wraps
 xtdata.enable_hello = False
 
 
@@ -19,221 +12,45 @@ xtdata.enable_hello = False
 class Config:
     """配置管理类"""
     def __init__(self):
-        self.config = self._load_config()
+        self.config = load_config()
         self.trading_config = self._get_trading_config()
         
-    def _load_config(self):
-        """加载配置文件"""
-        config = configparser.ConfigParser()
-        config.read(os.path.join(os.path.dirname(__file__), 'config.ini'), encoding='utf-8')
-        return config
-    
     def _get_trading_config(self):
         """获取交易相关配置"""
         return {
             'qmt_path': r'C:\国金证券QMT交易端\userdata_mini',
-            'buy_threshold': 10000,  # 买入资金阈值
+            'buy_threshold': 20000,  # 买入资金阈值
+            'buy_price_ratio': 1.005,  # 买入价格比例
             'sell_price_ratio': 0.995,  # 卖出价格比例
             'min_volume': 100,  # 最小交易数量
             'retry_times': 3,  # 重试次数
             'retry_delay': 1,  # 重试延迟(秒)
+            'processed_klines_file': "qmt_processed_klines.csv",  # 已处理K线记录文件
         }
-    
-    def get_wecom_webhook(self):
-        """获取企业微信webhook"""
-        return self.config.get('wecom', 'webhook')
-    
-    def get_account(self):
-        """获取交易账户"""
-        return self.config['trader']['account']
 
-# ================================= 工具函数 =================================
-def retry_on_failure(max_retries=3, delay=1):
-    """重试装饰器"""
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            for attempt in range(max_retries):
-                try:
-                    result = func(*args, **kwargs)
-                    # 处理tick数据返回结果
-                    if isinstance(result, dict) and args[0][0] in result and result[args[0][0]]:
-                        return result
-                    # 处理其他返回结果
-                    if isinstance(result, tuple):
-                        seq, success = result
-                        if success:
-                            return seq, True
-                    else:
-                        if isinstance(result, list):
-                            return result
-                        if result > 0:
-                            return result, True
-                    if attempt < max_retries - 1:
-                        print(f"尝试执行{func.__name__}失败，{attempt + 1}/{max_retries}次，等待{delay}秒后重试...")
-                        time.sleep(delay)
-                    else:
-                        print(f"尝试执行{func.__name__}失败，已达到最大重试次数{max_retries}次")
-                        return -1, False
-                except Exception as e:
-                    if attempt < max_retries - 1:
-                        print(f"执行{func.__name__}出错: {str(e)}，{attempt + 1}/{max_retries}次，等待{delay}秒后重试...")
-                        time.sleep(delay)
-                    else:
-                        print(f"执行{func.__name__}出错: {str(e)}，已达到最大重试次数{max_retries}次")
-                        return -1, False
-            return -1, False
-        return wrapper
-    return decorator
-
-def send_notification_wecom(subject, content):
-    """使用企业微信发送通知"""
-    try:
-        webhook = config.get_wecom_webhook()
-        response = requests.post(webhook, json={
-            "msgtype": "markdown",
-            "markdown": {"content": f"### {subject}\n{content}"}
-        })
-        
-        if not response.ok:
-            print(f"通知发送失败 HTTP:{response.status_code}")
-            return False
-            
-        result = response.json()
-        if result.get('errcode') != 0:
-            print(f"API错误: {result.get('errmsg')}")
-            
-        return result.get('errcode') == 0
-        
-    except Exception as e:
-        print(f"通知异常: {str(e)}")
-        return False
-
-def log_order(code, signal_type, price, volume=0, success=True):
-    """记录订单日志"""
-    log_msg = f"{'买入' if signal_type == 'BUY' else '卖出'}委托{'成功' if success else '失败'} - "
-    log_msg += f"股票: {code}, 价格: {price}"
-    if volume > 0:
-        log_msg += f", 数量: {volume}, 金额: {round(price * volume, 2)}元"
-    print(log_msg)
-
-# ================================= 指标计算 =================================
-def ha_st_pine(df, length, multiplier):
-    # ========== Heikin Ashi计算 ==========
-    '''direction=1上涨，-1下跌'''
-    df = df.copy()
-    
-    # 使用向量化操作计算HA价格
-    ha_close = (df['open'] + df['high'] + df['low'] + df['close']) / 4
-    
-    # 使用向量化操作计算HA开盘价
-    ha_open = pd.Series(index=df.index, dtype=float)
-    ha_open.iloc[0] = (df['open'].iloc[0] + df['close'].iloc[0]) / 2
-    
-    # 使用向量化操作计算HA高低价
-    ha_high = pd.Series(index=df.index, dtype=float)
-    ha_low = pd.Series(index=df.index, dtype=float)
-    
-    # 使用cumsum和shift进行向量化计算
-    for i in range(1, len(df)):
-        ha_open.iloc[i] = (ha_open.iloc[i-1] + ha_close.iloc[i-1]) / 2
-    
-    # 向量化计算HA高低价
-    ha_high = df[['high']].join(pd.DataFrame({
-        'ha_open': ha_open,
-        'ha_close': ha_close
-    })).max(axis=1)
-    
-    ha_low = df[['low']].join(pd.DataFrame({
-        'ha_open': ha_open,
-        'ha_close': ha_close
-    })).min(axis=1)
-    
-    # ========== ATR计算 ==========
-    # 使用向量化操作计算TR
-    tr1 = ha_high - ha_low
-    tr2 = (ha_high - ha_close.shift(1)).abs()
-    tr3 = (ha_low - ha_close.shift(1)).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    
-    # 使用向量化操作计算RMA
-    rma = pd.Series(index=df.index, dtype=float)
-    alpha = 1.0 / length
-    
-    # 初始化RMA
-    rma.iloc[length-1] = tr.iloc[:length].mean()
-    
-    # 使用向量化操作计算RMA
-    for i in range(length, len(df)):
-        rma.iloc[i] = alpha * tr.iloc[i] + (1 - alpha) * rma.iloc[i-1]
-    
-    # ========== SuperTrend计算 ==========
-    src = (ha_high + ha_low) / 2
-    upper_band = pd.Series(index=df.index, dtype=float)
-    lower_band = pd.Series(index=df.index, dtype=float)
-    super_trend = pd.Series(index=df.index, dtype=float)
-    direction = pd.Series(0, index=df.index)
-    
-    # 初始化第一个有效值
-    start_idx = length - 1
-    upper_band.iloc[start_idx] = src.iloc[start_idx] + multiplier * rma.iloc[start_idx]
-    lower_band.iloc[start_idx] = src.iloc[start_idx] - multiplier * rma.iloc[start_idx]
-    super_trend.iloc[start_idx] = upper_band.iloc[start_idx]
-    direction.iloc[start_idx] = 1
-    
-    # 使用向量化操作计算SuperTrend
-    for i in range(start_idx+1, len(df)):
-        current_upper = src.iloc[i] + multiplier * rma.iloc[i]
-        current_lower = src.iloc[i] - multiplier * rma.iloc[i]
-        
-        lower_band.iloc[i] = current_lower if (current_lower > lower_band.iloc[i-1] or ha_close.iloc[i-1] < lower_band.iloc[i-1]) else lower_band.iloc[i-1]
-        upper_band.iloc[i] = current_upper if (current_upper < upper_band.iloc[i-1] or ha_close.iloc[i-1] > upper_band.iloc[i-1]) else upper_band.iloc[i-1]
-        
-        if i == start_idx or pd.isna(rma.iloc[i-1]):
-            direction.iloc[i] = -1
-        elif super_trend.iloc[i-1] == upper_band.iloc[i-1]:
-            direction.iloc[i] = 1 if ha_close.iloc[i] > upper_band.iloc[i] else -1
-        else:
-            direction.iloc[i] = -1 if ha_close.iloc[i] < lower_band.iloc[i] else 1
-        
-        super_trend.iloc[i] = lower_band.iloc[i] if direction.iloc[i] == 1 else upper_band.iloc[i]
-    
-    # 将计算结果添加到DataFrame中
-    df['ha_open'] = ha_open
-    df['ha_high'] = ha_high
-    df['ha_low'] = ha_low
-    df['ha_close'] = ha_close
-    df['supertrend'] = super_trend
-    df['direction'] = direction
-    
-    return df
-
-def check_signal_change(df):
-    if len(df) < 2:
-        return None
-    last_two = df.tail(2)
-    if last_two['direction'].iloc[0] == -1 and last_two['direction'].iloc[1] == 1:
-        return 'BUY'
-    elif last_two['direction'].iloc[0] == 1 and last_two['direction'].iloc[1] == -1:
-        return 'SELL'
-    return None
 
 # ================================= 交易类 =================================
 class QMTTrader:
     """QMT交易类"""
-    def __init__(self, config):
-        self.config = config
+    def __init__(self):
+        self.config = Config()
         self.xt_trader = None
         self.acc = None
-        self.trading_config = config.trading_config
-        self.processed_klines_file = "processed_klines.txt"
         self.subscribed_codes = {}  # 改为字典，存储 code: seq 的映射
+        
+    def _log_order(self, code, signal_type, price, volume=0, success=True):
+        """记录订单日志"""
+        log_msg = f"{'买入' if signal_type == 'BUY' else '卖出'}委托{'成功' if success else '失败'} - "
+        log_msg += f"股票: {code}, 价格: {price}"
+        if volume > 0:
+            log_msg += f", 数量: {volume}, 金额: {round(price * volume, 2)}元"
+        print(log_msg)
         
     def _load_processed_klines(self):
         """从文件加载已处理的K线记录"""
         try:
-            if os.path.exists(self.processed_klines_file):
-                with open(self.processed_klines_file, "r") as f:
+            if os.path.exists(self.config.trading_config['processed_klines_file']):
+                with open(self.config.trading_config['processed_klines_file'], "r") as f:
                     return set(line.strip() for line in f)
             return set()
         except Exception as e:
@@ -243,17 +60,26 @@ class QMTTrader:
     def _save_processed_kline(self, kline_key):
         """保存处理过的K线记录到文件"""
         try:
-            with open(self.processed_klines_file, "a") as f:
+            with open(self.config.trading_config['processed_klines_file'], "a") as f:
                 f.write(f"{kline_key}\n")
         except Exception as e:
             print(f"保存K线记录出错: {str(e)}")
-            
+
+    def _clear_processed_klines(self):
+        """清空已处理的K线记录"""
+        try:
+            if os.path.exists(self.config.trading_config['processed_klines_file']):
+                os.remove(self.config.trading_config['processed_klines_file'])
+                print("已清空K线记录")
+        except Exception as e:
+            print(f"清空K线记录出错: {str(e)}")
+
     def init_trader(self):
         """初始化QMT交易接口"""
-        path = self.trading_config['qmt_path']
+        path = self.config.trading_config['qmt_path']
         session_id = int(time.time())
         self.xt_trader = XtQuantTrader(path, session_id)
-        self.acc = StockAccount(self.config.get_account())
+        self.acc = StockAccount(self.config.config['trader']['account'])
         self.xt_trader.start()
         self.xt_trader.connect()
         time.sleep(3)
@@ -278,7 +104,7 @@ class QMTTrader:
         )
         return result, result is not None
 
-    @retry_on_failure(max_retries=3, delay=1)
+    @retry_on_failure(max_retries=3, delay=2)
     def get_stock_tick(self, code):
         """获取股票tick数据"""
         tick_data = xtdata.get_full_tick([code])
@@ -288,99 +114,115 @@ class QMTTrader:
 
     def subscribe_stocks(self, code_list):
         """订阅股票行情"""
-        try:
-            for code in code_list:
-                # 订阅并保存返回的订阅号
-                seq = xtdata.subscribe_quote(code, '5m')
-                if seq > 0:  # 订阅成功
-                    self.subscribed_codes[code] = seq
-                    print(f"订阅 {code} 5分钟数据成功，订阅号: {seq}")
-                else:
-                    print(f"订阅 {code} 失败")
-            return True
-        except Exception as e:
-            print(f"订阅股票行情失败: {e}")
-            return False
+        for code in code_list:
+            # 订阅5分钟K线数据
+            xtdata.download_history_data(code, period='5m', start_time='20240101')
+            kline_seq = xtdata.subscribe_quote(code, '5m')
+            if kline_seq > 0:  # 订阅成功
+                self.subscribed_codes[f"{code}_kline"] = kline_seq
+                print(f"订阅 {code} 5分钟数据成功，订阅号: {kline_seq}")
+            else:
+                print(f"订阅 {code} 5分钟数据失败")
+                
+            # 订阅tick数据
+            tick_seq = xtdata.subscribe_quote(code, 'tick')
+            if tick_seq > 0:  # 订阅成功
+                self.subscribed_codes[f"{code}_tick"] = tick_seq
+                print(f"订阅 {code} tick数据成功，订阅号: {tick_seq}")
+            else:
+                print(f"订阅 {code} tick数据失败")
+        return True
+
 
     def unsubscribe_stocks(self):
-        """取消所有股票订阅"""
-        try:
-            # 逐个取消订阅
-            for code, seq in list(self.subscribed_codes.items()):
-                try:
-                    # 使用订阅号取消订阅
-                    xtdata.unsubscribe_quote(seq)
-                    print(f"取消订阅 {code}(订阅号:{seq}) 成功")
-                    del self.subscribed_codes[code]
-                except Exception as e:
-                    print(f"取消订阅 {code}(订阅号:{seq}) 失败: {e}")
-            
-            # 以防万一，清空订阅字典
-            self.subscribed_codes.clear()
-            return True
-        except Exception as e:
-            print(f"取消订阅过程中出错: {e}")
-            return False
+        """使用订阅号取消所有股票订阅"""
+        for code_type, seq in list(self.subscribed_codes.items()):
+            xtdata.unsubscribe_quote(seq)
+            print(f"取消订阅 {code_type}(订阅号:{seq}) 成功")
+            del self.subscribed_codes[code_type]
+        
+        # 以防万一，清空订阅字典
+        self.subscribed_codes.clear()
+        return True
+
 
     def process_signal(self, code, signal, trade_time, current_price, stock_params):
         """处理交易信号"""
-        # 生成K线唯一标识
+        # 1. K线重复检查
         kline_key = f"{code}_{trade_time.strftime('%Y%m%d%H%M')}"
-        
-        # 检查是否已经处理过这根K线
-        processed_klines = self._load_processed_klines()
-        if kline_key in processed_klines:
+        if kline_key in self._load_processed_klines():
             print(f"跳过重复K线信号 - 股票:{code}, 信号:{signal}, K线时间:{trade_time}")
             return
-            
-        # 记录新处理的K线
         self._save_processed_kline(kline_key)
         
+        # 2. 获取最新行情
+        tick = self.get_stock_tick(code)
+        if not (tick and code in tick and tick[code]):
+            error_msg = f"无法获取股票{code}的tick数据"
+            print(error_msg)
+            send_wecom("获取Tick数据失败", error_msg)
+            return
+            
+        tick_data = tick[code]
+        last_price = tick_data["lastPrice"]  # 最新价
+        bid_price = tick_data["bidPrice"][0]  # 买一价
+        ask_price = tick_data["askPrice"][0]  # 卖一价
+        
+        # 3. 准备通知内容
         subject = f"{stock_params['name']} - {signal} - {current_price}"
         content = f"""
         信号类型: {signal}
         股票信息: {stock_params['name']}({code})({stock_params['circ_mv_range']})
         信号时间: {trade_time}
         当前价格: {current_price}
+        最新价: {last_price}
+        买一价: {bid_price}
+        卖一价: {ask_price}
         sharpe: {stock_params['sharpe']}
         胜率: {stock_params['win_rate']}
         盈亏比: {stock_params['profit_factor']}
         """
         
+        # 4. 处理买卖信号
         if signal == "BUY":
-            money_threshold = self.trading_config['buy_threshold']
-            order_volume = max(self.trading_config['min_volume'], int(money_threshold / current_price) // 100 * 100)
-            seq, success = self.place_order(code, "BUY", order_volume, current_price)
-            if success:
-                send_notification_wecom(subject, content)
-                log_order(code, "BUY", current_price, order_volume, True)
-            else:
-                log_order(code, "BUY", current_price, order_volume, False)
-        else:
-            positions = self.get_positions()
-            positions_dict = {pos.stock_code: pos.volume for pos in positions}
-            if code in positions_dict and positions_dict[code] > 0:
-                tick = self.get_stock_tick(code)
-                if tick and code in tick and tick[code]:
-                    sell_price = round((tick[code]["bidPrice"][0] if tick[code]["bidPrice"][0] != 0 
-                                      else tick[code]["lastPrice"]) * self.trading_config['sell_price_ratio'], 2)
-                    seq, success = self.place_order(code, "SELL", positions_dict[code], sell_price)
-                    if success:
-                        send_notification_wecom(subject, content)
-                        log_order(code, "SELL", sell_price, positions_dict[code], True)
-                    else:
-                        log_order(code, "SELL", sell_price, positions_dict[code], False)
-                else:
-                    error_msg = f"无法获取股票{code}的tick数据"
-                    print(error_msg)
-                    send_notification_wecom("获取Tick数据失败", error_msg)
+            # 买入使用卖一价，如果卖一价为0则使用最新价
+            price = round(
+                (ask_price if ask_price > 0 else last_price) * 
+                self.config.trading_config['buy_price_ratio'], 
+                2
+            )
+            # 确保买入数量为100的整数倍
+            volume = max(
+                self.config.trading_config['min_volume'], 
+                int(self.config.trading_config['buy_threshold'] / price) // 100 * 100
+            )
+        else:  # SELL
+            positions_dict = {pos.stock_code: pos.volume for pos in self.get_positions()}
+            if not (code in positions_dict and positions_dict[code] > 0):
+                return
+            # 卖出使用买一价，如果买一价为0则使用最新价
+            price = round(
+                (bid_price if bid_price > 0 else last_price) * 
+                self.config.trading_config['sell_price_ratio'], 
+                2
+            )
+            volume = positions_dict[code]  # 卖出全部持仓
+            
+        # 5. 执行交易并发送通知
+        seq, success = self.place_order(code, signal, volume, price)
+        if success:
+            content += f"\n交易详情:\n委托价格: {price}\n委托数量: {volume}\n交易金额: {round(price * volume, 2)}"
+            send_wecom(subject, content)
+        self._log_order(code, signal, price, volume, success)
+
+
 
 # ================================= 市场分析 =================================
 def get_top_stocks():
     """从CSV文件获取监控标的"""
     try:
         # 读取CSV文件
-        df = pd.read_csv('monitor_stocks.csv', encoding='utf-8')
+        df = pd.read_csv('qmt_monitor_stocks_calmar.csv', encoding='utf-8')
         
         # 确保必要的列存在
         required_columns = ['ts_code', 'period', 'multiplier', 'sharpe', 'sortino', 'win_rate', 'profit_factor', 'name', 'circ_mv_range']
@@ -394,7 +236,7 @@ def get_top_stocks():
         return df
         
     except FileNotFoundError:
-        print("错误: 未找到monitor_stocks.csv文件")
+        print("错误: 未找到qmt_monitor_stocks_calmar.csv文件")
         return pd.DataFrame()
     except Exception as e:
         print(f"读取监控标的时发生错误: {str(e)}")
@@ -426,7 +268,7 @@ def run_market_analysis():
     """运行市场分析"""
     # 每天第一次运行时清空记录
     if datetime.now().strftime('%H%M') == '0900':
-        trader.clear_processed_klines()
+        trader._clear_processed_klines()
     
     print(f"\n开始监控市场数据... 当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -435,29 +277,14 @@ def run_market_analysis():
     
     # 准备并行计算参数
     calc_args = []
-    buy_status_stocks = []
-    sell_status_stocks = []
     
-    # 计算每个股票的状态并打印
-    print("\n当前股票状态:")
+    # 为每个股票获取计算参数
     for code in code_list:
         if code in df:
             stock_params = top_stocks[top_stocks['ts_code'] == code].iloc[0].to_dict()
             stock_data = df[code].copy()
-            # 计算指标
-            stock_data = ha_st_pine(stock_data, stock_params['period'], stock_params['multiplier'])
-            # 获取最新状态并记录
-            if stock_data['direction'].iloc[-1] == 1:
-                buy_status_stocks.append(f"{stock_params['name']}({code})")
-            else:
-                sell_status_stocks.append(f"{stock_params['name']}({code})")
-            
             calc_args.append((code, stock_data, stock_params))
-    
-    print(f"需要持仓的股票({len(buy_status_stocks)}只)：{', '.join(buy_status_stocks)}")
-    # print(f"卖出状态的股票({len(sell_status_stocks)}只)：{', '.join(sell_status_stocks)}")
-    print("-" * 80)
-    
+        
     # 并行计算信号
     with Pool(processes=2) as pool:
         signal_results = pool.map(calculate_signals, calc_args)
@@ -475,15 +302,44 @@ def run_market_analysis():
             result['params']
         )
 
+def check_positions():
+    """检查持仓状态，对下跌趋势未卖出的股票发出提醒"""
+    # 获取当前持仓
+    positions = trader.get_positions()
+    if not positions:
+        return
+        
+    # 获取持仓股票的最新数据
+    position_codes = [pos.stock_code for pos in positions]
+    df = xtdata.get_market_data_ex([], position_codes, period='30m', start_time='20240101')
+    
+    # 检查每个持仓股票的状态
+    warning_stocks = []
+    for pos in positions:
+        code = pos.stock_code
+        if code not in df:
+            continue
+            
+        stock_params = top_stocks[top_stocks['ts_code'] == code].iloc[0].to_dict()
+        stock_data = df[code].copy()
+        stock_data = ha_st_pine(stock_data, stock_params['period'], stock_params['multiplier'])
+        
+        # 如果最新方向为下跌
+        if stock_data['direction'].iloc[-1] == -1:
+            warning_stocks.append(f"{stock_params['name']}({code})")
+    
+    # 只在发现问题时发送通知
+    if warning_stocks:
+        subject = "持仓股票异常提醒"
+        content = "以下股票处于下跌趋势但是没有卖出：\n" + "\n".join(warning_stocks)
+        send_wecom(subject, content)
+
 # ================================= 主程序 =================================
 if __name__ == "__main__":
     trader = None
     try:
-        # 初始化配置
-        config = Config()
-        
         # 初始化交易接口
-        trader = QMTTrader(config)
+        trader = QMTTrader()
         trader.init_trader()
         
         # 获取持仓并生成监控列表
@@ -495,10 +351,17 @@ if __name__ == "__main__":
         trader.subscribe_stocks(code_list)
 
         # 设置定时任务
-        for hour in range(9, 16):   # 09:30 ~ 11:30
+        for hour in range(9, 16):   # 09:00 ~ 15:00
             for minute in [0, 30]:
                 schedule_time = f"{hour:02d}:{minute:02d}:05"
                 schedule.every().day.at(schedule_time).do(run_market_analysis)
+                schedule_time_sell_check = f"{hour:02d}:{minute:02d}:55"
+                schedule.every().day.at(schedule_time_sell_check).do(check_positions)
+                
+            # 15和45分钟只检查持仓
+            for minute in [15, 45]:
+                schedule_time_sell_check = f"{hour:02d}:{minute:02d}:55"
+                schedule.every().day.at(schedule_time_sell_check).do(check_positions)
 
         # 运行定时任务
         while True:
@@ -508,7 +371,7 @@ if __name__ == "__main__":
             except Exception as e:
                 error_msg = f"程序运行出错: {str(e)}"
                 print(error_msg)
-                send_notification_wecom("程序运行错误", error_msg)
+                send_wecom("程序运行错误", error_msg)
                 time.sleep(5)
                 continue
 
@@ -520,7 +383,7 @@ if __name__ == "__main__":
     except Exception as e:
         error_msg = f"程序初始化失败: {str(e)}"
         print(error_msg)
-        send_notification_wecom("程序初始化错误", error_msg)
+        send_wecom("程序初始化错误", error_msg)
         if trader:
             trader.unsubscribe_stocks()
         raise
