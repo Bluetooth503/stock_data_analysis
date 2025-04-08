@@ -144,7 +144,7 @@ def main():
         # 获取最新记录时间
         latest_time = (pd.to_datetime(get_latest_record_time(engine)) + pd.Timedelta(days=1)).strftime('%Y%m%d')
         # latest_time = '20190101'
-        end_time = '20191231'
+        end_time = '20230631'
 
         # 获取股票列表
         stocks = stock_list['ts_code'].tolist()

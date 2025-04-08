@@ -9,7 +9,7 @@ import numpy as np
 import requests
 from functools import wraps
 from typing import Dict, List, Tuple
-
+from tqdm import tqdm
 
 # ================================= 配置加载 =================================
 def load_config():

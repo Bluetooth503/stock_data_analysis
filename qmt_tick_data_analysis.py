@@ -174,12 +174,14 @@ class StockScorer:
         historical_data = defaultdict(dict)
         try:
             # 读取历史数据文件
-            df = pd.read_parquet('qmt_historical_volume_5min.parquet')
+            df = pd.read_parquet('qmt_past_5_days_statistics.parquet')
             for _, row in df.iterrows():
-                stock_code = row['stock_code']
+                stock_code = row['ts_code']
                 time_key = row['time_key']
                 avg_volume = float(row['avg_volume'])
+                avg_trans = float(row['avg_trans'])
                 historical_data[stock_code][time_key] = avg_volume
+                historical_data[stock_code][time_key] = avg_trans
             print(f"成功加载历史成交量数据,共{len(historical_data)}只股票")
             return historical_data
         except Exception as e:
@@ -210,6 +212,9 @@ class StockScorer:
                     if tick['time'] > 1000000000000:  # 如果是毫秒时间戳
                         tick['time'] = tick['time'] // 1000  # 转换为秒
                     valid_ticks[code] = tick
+                    
+                    # 调试信息，查看每个股票的交易数据
+                    print(f"接收到股票: {code}, transaction_num: {tick.get('transactionNum', 0)}, volume: {tick.get('volume', 0)}, ask_vol: {tick.get('ask_vol', 0)}, bid_vol: {tick.get('bid_vol', 0)}")
             
             # 处理有效数据
             for stock_code, tick in valid_ticks.items():
@@ -472,9 +477,15 @@ class StockScorer:
                     time_key = self._get_time_key(int(time.time()))
                     hist_trans = self.historical_volume.get(code, {}).get(f"{time_key}_trans", current_avg_trans)
                     
+                    # 获取历史平均成交笔数
+                    avg_trans = self.historical_volume.get(code, {}).get(time_key, 0)  # 使用avg_trans
+                    
+                    # 调试信息
+                    print(f"股票代码: {code}, 当前平均成交笔数: {current_avg_trans}, 历史平均成交笔数: {avg_trans}, 历史成交笔数: {hist_trans}")
+                    
                     # 计算交易活跃度比率
-                    if hist_trans > 0:
-                        trans_ratio = current_avg_trans / hist_trans
+                    if avg_trans > 0:
+                        trans_ratio = current_avg_trans / avg_trans
                         # 计算变化趋势
                         changes = np.diff(transactions)
                         valid_indices = transactions[:-1] > 0
