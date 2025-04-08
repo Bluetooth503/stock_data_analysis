@@ -9,7 +9,6 @@ from xtquant import xtdata
 import swifter
 import os
 import traceback
-
 xtdata.enable_hello = False
 
 
@@ -26,6 +25,12 @@ FACTOR_WEIGHTS = {
 BUFFER_SIZE = 50000  # 缓冲区大小，约30秒的数据量
 DELAY_THRESHOLD = 6  # 延迟处理阈值（秒），考虑网络延迟
 MISSING_DATA_THRESHOLD = 6  # 数据缺失判定阈值（秒）
+
+# 行情数据相关的常量
+TICK_INTERVAL = 3  # level1行情数据的正常间隔时间（秒）
+MISSING_THRESHOLD = 15  # 数据缺失判定阈值（秒，考虑到不活跃股票的情况）
+QUALITY_CHECK_INTERVAL = 60  # 数据质量检查间隔（秒）
+
 
 class TickBuffer:
     """用于处理tick数据的缓冲区，确保时间顺序"""
@@ -74,14 +79,23 @@ class TickBuffer:
             traceback.print_exc()
             return None
     
-    def get_ready_ticks(self, current_time: int, delay_threshold: int = 6) -> List[Tuple[int, str, dict]]:
-        """获取已经可以安全处理的tick数据"""
+    def get_ready_ticks(self, current_time: int, start_time: int, end_time: int, delay_threshold: int = 6) -> List[Tuple[int, str, dict]]:
+        """获取指定时间窗口内的tick数据
+        Args:
+            current_time: 当前时间戳
+            start_time: 开始时间戳
+            end_time: 结束时间戳
+            delay_threshold: 延迟阈值（秒）
+        """
+
         ready_ticks = []
         try:
             while self.buffer and self.buffer[0][0] <= current_time - delay_threshold:
                 tick = self.process_earliest_tick()
                 if tick:  # 确保返回的数据不是None
-                    ready_ticks.append(tick)
+                    timestamp, stock_code, tick_data = tick
+                    if start_time <= timestamp < end_time:
+                        ready_ticks.append(tick)
             return ready_ticks
         except Exception as e:
             print(f"获取ready ticks出错: {e}")
@@ -129,14 +143,9 @@ class TickBuffer:
             }
 
 class StockScorer:
-    # 行情数据相关的常量
-    TICK_INTERVAL = 3  # level1行情数据的正常间隔时间（秒）
-    MISSING_THRESHOLD = 15  # 数据缺失判定阈值（秒，考虑到不活跃股票的情况）
-    QUALITY_CHECK_INTERVAL = 60  # 数据质量检查间隔（秒）
-    
     def __init__(self):
-        # 修改 tick_buffer 的初始化方式
-        self.tick_buffer = TickBuffer(BUFFER_SIZE)  # 使用 TickBuffer 类而不是 defaultdict
+        # 初始化缓冲区
+        self.tick_buffer = TickBuffer(BUFFER_SIZE)
         
         # 使用 numpy 数组替代 defaultdict 存储历史数据
         self.price_history = {}  # 改为普通dict
@@ -144,7 +153,7 @@ class StockScorer:
         
         # 初始化时预分配数组
         def init_arrays(stock_code):
-            self.price_history[stock_code] = np.zeros(30, dtype=np.float32)  # 使用float32减少内存
+            self.price_history[stock_code] = np.zeros(30, dtype=np.float32)
             self.volume_history[stock_code] = np.zeros(30, dtype=np.float32)
         
         # 存储1分钟K线数据
@@ -180,8 +189,11 @@ class StockScorer:
                 time_key = row['time_key']
                 avg_volume = float(row['avg_volume'])
                 avg_trans = float(row['avg_trans'])
-                historical_data[stock_code][time_key] = avg_volume
-                historical_data[stock_code][time_key] = avg_trans
+                # 使用字典存储多个指标
+                historical_data[stock_code][time_key] = {
+                    'volume': avg_volume,
+                    'transactions': avg_trans
+                }
             print(f"成功加载历史成交量数据,共{len(historical_data)}只股票")
             return historical_data
         except Exception as e:
@@ -196,28 +208,15 @@ class StockScorer:
         return f"{dt.hour:02d}{minute:02d}00"
 
     def process_tick(self, datas: Dict[str, dict]):
-        """添加更robust的错误处理"""
+        """处理tick数据的入口"""
         try:
             current_time = int(time.time())
-            
-            # 数据验证
-            if not isinstance(datas, dict):
-                raise ValueError("Invalid data format")
-                
-            # 批量处理前的数据验证
-            valid_ticks = {}
-            for code, tick in datas.items():
-                if self._validate_tick_data(tick):
-                    # 确保时间戳是秒级的
-                    if tick['time'] > 1000000000000:  # 如果是毫秒时间戳
-                        tick['time'] = tick['time'] // 1000  # 转换为秒
-                    valid_ticks[code] = tick
-                    
-                    # 调试信息，查看每个股票的交易数据
-                    print(f"接收到股票: {code}, transaction_num: {tick.get('transactionNum', 0)}, volume: {tick.get('volume', 0)}, ask_vol: {tick.get('ask_vol', 0)}, bid_vol: {tick.get('bid_vol', 0)}")
-            
-            # 处理有效数据
-            for stock_code, tick in valid_ticks.items():
+
+            # 时间戳转换
+            for stock_code, tick in datas.items():
+                # 确保时间戳是秒级的
+                if tick['time'] > 1000000000000:
+                    tick['time'] = tick['time'] // 1000
                 self._process_single_tick(current_time, stock_code, tick)
             
             # 检查数据完整性
@@ -233,16 +232,12 @@ class StockScorer:
         
         return True
         
-    def _validate_tick_data(self, tick: dict) -> bool:
-        """验证tick数据的完整性"""
-        required_fields = {'time', 'lastPrice', 'volume', 'askPrice', 'bidPrice'}
-        return all(field in tick for field in required_fields)
-
     def _process_single_tick(self, timestamp: int, stock_code: str, tick: dict):
         """处理单个tick数据"""
         try:
-            # 更新最后处理时间
-            self.last_update_time[stock_code] = timestamp
+            # 使用 tick['time'] 作为时间戳
+            tick_time = tick['time'] // 1000  # 转换为秒级时间戳
+            self.last_update_time[stock_code] = tick_time  # 更新最后处理时间
             
             # 保存昨收价
             if 'lastClose' in tick:
@@ -259,8 +254,8 @@ class StockScorer:
             total_bid_vol = sum(vol for vol in bid_vols if vol > 0)
             
             # 将tick数据加入缓存
-            self.tick_buffer.add_tick(timestamp, stock_code, {
-                'time': timestamp,
+            self.tick_buffer.add_tick(tick_time, stock_code, {
+                'time': tick_time,
                 'price': tick['lastPrice'],
                 'volume': tick['volume'],
                 'pvolume': tick.get('pvolume', 0),
@@ -283,7 +278,7 @@ class StockScorer:
                 self.new_high_count[stock_code] += 1
             
             # 每分钟聚合一次
-            if self._should_aggregate_1min(timestamp):
+            if self._should_aggregate_1min(tick_time):
                 self._aggregate_1min_data(stock_code)
             
         except Exception as e:
@@ -293,20 +288,23 @@ class StockScorer:
     def _should_aggregate_1min(self, current_time):
         """判断是否应该进行1分钟聚合"""
         try:
-            dt = datetime.fromtimestamp(current_time)
-            last_minute = current_time - 60  # 上一分钟的开始时间
+            # 计算当前时间所在的自然分钟的开始时间
+            current_minute_start = current_time - (current_time % 60)  # 向下取整到分钟
             
-            # 检查是否已经处理过上一分钟的数据
+            # 计算上一个自然分钟的开始时间
+            last_minute_start = current_minute_start - 60
+            
+            # 检查是否已经处理过这个自然分钟的数据
             if hasattr(self, '_last_aggregate_time'):
-                if self._last_aggregate_time >= last_minute:
+                if self._last_aggregate_time >= current_minute_start:
                     return False
             
-            # 检查是否满足延迟条件
-            if current_time - last_minute <= DELAY_THRESHOLD:
+            # 确保有足够的延迟来收集完整的分钟数据
+            if current_time - last_minute_start < DELAY_THRESHOLD:
                 return False
-                
+            
             # 更新最后聚合时间
-            self._last_aggregate_time = last_minute
+            self._last_aggregate_time = current_minute_start
             return True
             
         except Exception as e:
@@ -355,35 +353,39 @@ class StockScorer:
             return False
     
     def _aggregate_1min_data(self, stock_code: str):
-        """优化的1分钟K线聚合"""
+        """按自然分钟聚合的1分钟K线数据"""
         current_time = int(time.time())
-        dt = datetime.fromtimestamp(current_time)
         
-        # 获取上一分钟的时间范围
-        start_time = current_time - 60
-        end_time = current_time
+        # 计算上一个自然分钟的时间范围
+        current_minute = current_time - (current_time % 60)  # 向下取整到分钟
+        start_time = current_minute - 60  # 上一个自然分钟开始
+        end_time = current_minute        # 上一个自然分钟结束
         
         # 获取这个时间范围内的所有tick数据
-        ticks = self.tick_buffer.get_ready_ticks(current_time)
+        ticks = self.tick_buffer.get_ready_ticks(
+            current_time=current_time,
+            start_time=start_time,
+            end_time=end_time
+        )
         if not ticks:
             return
             
-        # 过滤出当前股票的 ticks，并且时间在上一分钟内
-        stock_ticks = [t[2] for t in ticks if t[1] == stock_code and start_time <= t[0] < end_time]
+        # 过滤出当前股票的ticks
+        stock_ticks = [t[2] for t in ticks if t[1] == stock_code]
         if not stock_ticks:
             return
             
         # 使用numpy进行快速计算
         prices = np.array([t['price'] for t in stock_ticks])
         volumes = np.array([t['volume'] for t in stock_ticks])
-        pvolumes = np.array([t['pvolume'] for t in stock_ticks])  # 原始成交量
+        pvolumes = np.array([t['pvolume'] for t in stock_ticks])
         amounts = np.array([t['amount'] for t in stock_ticks])
         bid_vols = np.array([t['bid_vol'] for t in stock_ticks])
         ask_vols = np.array([t['ask_vol'] for t in stock_ticks])
         transaction_nums = np.array([t['transaction_num'] for t in stock_ticks])
         
         min1_bar = {
-            'time': current_time,  # 添加time字段
+            'time': start_time,  # 使用自然分钟的开始时间
             'open': stock_ticks[0]['open'],  # 使用第一个tick的开盘价
             'high': np.max([t['high'] for t in stock_ticks]),  # 使用period内的最高价
             'low': np.min([t['low'] for t in stock_ticks]),    # 使用period内的最低价
