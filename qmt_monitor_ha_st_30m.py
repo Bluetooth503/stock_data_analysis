@@ -249,8 +249,8 @@ def calculate_signals(args):
     stock_data['ts_code'] = code
     stock_data['trade_time'] = pd.to_datetime(stock_data['time'].apply(lambda x: datetime.fromtimestamp(x / 1000.0)))
     stock_data = ha_st_pine(stock_data, stock_params['period'], stock_params['multiplier'])
-    if '0930' <= datetime.now().strftime('%H%M') <= '1500':
-        stock_data = stock_data.iloc[:-1]
+    # 去掉最后一根未完成的K线
+    stock_data = stock_data.iloc[:-1]
     
     signal = check_signal_change(stock_data)
     if signal:
@@ -334,6 +334,30 @@ def check_positions():
         content = "以下股票处于下跌趋势但是没有卖出：\n" + "\n".join(warning_stocks)
         send_wecom(subject, content)
 
+def setup_schedule():
+    """设置定时任务"""
+    trading_hours = [
+        (9, 30), (10, 0), (10, 30), (11, 0), (11, 30),  # 上午交易时段
+        (13, 0), (13, 30), (14, 0), (14, 30), (15, 0)   # 下午交易时段
+    ]
+    
+    for hour, minute in trading_hours:
+        # 设置市场分析任务
+        schedule_time = f"{hour:02d}:{minute:02d}:05"
+        schedule.every().day.at(schedule_time).do(run_market_analysis)
+        
+        # 设置持仓检查任务
+        schedule_time_sell_check = f"{hour:02d}:{minute:02d}:55"
+        schedule.every().day.at(schedule_time_sell_check).do(check_positions)
+    
+    # 额外的15分和45分持仓检查
+    for hour in range(9, 16):
+        for minute in [15, 45]:
+            if (hour == 9 and minute < 30) or (11 < hour < 13):
+                continue
+            schedule_time = f"{hour:02d}:{minute:02d}:55"
+            schedule.every().day.at(schedule_time).do(check_positions)
+
 # ================================= 主程序 =================================
 if __name__ == "__main__":
     trader = None
@@ -351,17 +375,7 @@ if __name__ == "__main__":
         trader.subscribe_stocks(code_list)
 
         # 设置定时任务
-        for hour in range(9, 16):   # 09:00 ~ 15:00
-            for minute in [0, 30]:
-                schedule_time = f"{hour:02d}:{minute:02d}:05"
-                schedule.every().day.at(schedule_time).do(run_market_analysis)
-                schedule_time_sell_check = f"{hour:02d}:{minute:02d}:55"
-                schedule.every().day.at(schedule_time_sell_check).do(check_positions)
-                
-            # 15和45分钟只检查持仓
-            for minute in [15, 45]:
-                schedule_time_sell_check = f"{hour:02d}:{minute:02d}:55"
-                schedule.every().day.at(schedule_time_sell_check).do(check_positions)
+        setup_schedule()
 
         # 运行定时任务
         while True:
