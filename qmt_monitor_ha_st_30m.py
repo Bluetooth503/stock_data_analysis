@@ -245,12 +245,18 @@ def get_top_stocks():
 def calculate_signals(args):
     """计算交易信号"""
     code, stock_data, stock_params = args
+    current_time = datetime.now().strftime('%H%M')
     
     stock_data['ts_code'] = code
     stock_data['trade_time'] = pd.to_datetime(stock_data['time'].apply(lambda x: datetime.fromtimestamp(x / 1000.0)))
-    stock_data = ha_st_pine(stock_data, stock_params['period'], stock_params['multiplier'])
-    # 去掉最后一根未完成的K线
-    stock_data = stock_data.iloc[:-1]
+    
+    # 开盘和收盘前特殊时段使用未完成K线
+    if current_time in ['0935', '1455']:
+        stock_data = ha_st_pine(stock_data, stock_params['period'], stock_params['multiplier'])
+    else:
+        stock_data = ha_st_pine(stock_data, stock_params['period'], stock_params['multiplier'])
+        # 其他时间去掉最后一根未完成的K线
+        stock_data = stock_data.iloc[:-1]
     
     signal = check_signal_change(stock_data)
     if signal:
@@ -337,8 +343,10 @@ def check_positions():
 def setup_schedule():
     """设置定时任务"""
     trading_hours = [
-        (9, 30), (10, 0), (10, 30), (11, 0), (11, 30),  # 上午交易时段
-        (13, 0), (13, 30), (14, 0), (14, 30), (15, 0)   # 下午交易时段
+        (9, 35),  # 开盘特殊时段
+        (10, 0), (10, 30), (11, 0), (11, 30),  # 上午交易时段
+        (13, 0), (13, 30), (14, 0), (14, 30),
+        (14, 55)  # 收盘前特殊时段
     ]
     
     for hour, minute in trading_hours:
@@ -346,14 +354,15 @@ def setup_schedule():
         schedule_time = f"{hour:02d}:{minute:02d}:05"
         schedule.every().day.at(schedule_time).do(run_market_analysis)
         
-        # 设置持仓检查任务
-        schedule_time_sell_check = f"{hour:02d}:{minute:02d}:55"
-        schedule.every().day.at(schedule_time_sell_check).do(check_positions)
+        # 设置持仓检查任务（除了14:55不设置）
+        if (hour, minute) != (14, 55):
+            schedule_time_sell_check = f"{hour:02d}:{minute:02d}:55"
+            schedule.every().day.at(schedule_time_sell_check).do(check_positions)
     
-    # 额外的15分和45分持仓检查
-    for hour in range(9, 16):
+    # 额外的15分和45分持仓检查（排除11:30-13:00的休市时间）
+    for hour in range(9, 15):
         for minute in [15, 45]:
-            if (hour == 9 and minute < 30) or (11 < hour < 13):
+            if (hour == 9 and minute < 35) or (11 < hour < 13) or (hour == 14 and minute > 45):
                 continue
             schedule_time = f"{hour:02d}:{minute:02d}:55"
             schedule.every().day.at(schedule_time).do(check_positions)
