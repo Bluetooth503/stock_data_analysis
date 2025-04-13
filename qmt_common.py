@@ -10,6 +10,7 @@ import requests
 from functools import wraps
 from typing import Dict, List, Tuple
 from tqdm import tqdm
+import zmq
 
 # ================================= 配置加载 =================================
 def load_config():
@@ -200,3 +201,30 @@ def check_signal_change(df):
     elif last_two['direction'].iloc[0] == 1 and last_two['direction'].iloc[1] == -1:
         return 'SELL'
     return None
+
+def get_zmq_keys(config):
+    """获取或生成ZMQ密钥对
+    Returns:
+        tuple: (public_key, secret_key)
+    """
+    keys_dir = config.get('zmq', 'keys_dir')
+    os.makedirs(keys_dir, exist_ok=True)
+    
+    public_path = os.path.join(keys_dir, 'server.public')
+    secret_path = os.path.join(keys_dir, 'server.secret')
+    
+    # 如果密钥文件不存在，生成新的密钥对
+    if not (os.path.exists(public_path) and os.path.exists(secret_path)):
+        public_key, secret_key = zmq.curve_keypair()
+        with open(public_path, 'wb') as f:
+            f.write(public_key)
+        with open(secret_path, 'wb') as f:
+            f.write(secret_key)
+        print(f"已生成新的ZMQ密钥对: {keys_dir}")
+    else:
+        with open(public_path, 'rb') as f:
+            public_key = f.read()
+        with open(secret_path, 'rb') as f:
+            secret_key = f.read()
+    
+    return public_key, secret_key

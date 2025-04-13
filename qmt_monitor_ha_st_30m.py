@@ -116,7 +116,7 @@ class QMTTrader:
         """订阅股票行情"""
         for code in code_list:
             # 订阅5分钟K线数据
-            xtdata.download_history_data(code, period='5m', start_time='20240101')
+            xtdata.download_history_data(code, period='5m', start_time='20240101', incrementally=True)
             kline_seq = xtdata.subscribe_quote(code, '5m')
             if kline_seq > 0:  # 订阅成功
                 self.subscribed_codes[f"{code}_kline"] = kline_seq

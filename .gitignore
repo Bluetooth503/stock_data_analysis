@@ -189,3 +189,4 @@ xtquant
 *.json
 *.parquet
 *.txt
+*.code-workspace

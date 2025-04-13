@@ -23,7 +23,7 @@ FACTOR_WEIGHTS = {
 
 # 优化缓冲区配置
 BUFFER_SIZE = 50000  # 缓冲区大小，约30秒的数据量
-DELAY_THRESHOLD = 6  # 延迟处理阈值（秒），考虑网络延迟
+DELAY_THRESHOLD = 12  # 延迟处理阈值（秒），考虑网络延迟
 MISSING_DATA_THRESHOLD = 6  # 数据缺失判定阈值（秒）
 
 # 行情数据相关的常量
