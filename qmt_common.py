@@ -14,7 +14,8 @@ import zmq
 import zlib
 from loguru import logger
 import sys
-
+import os
+import inspect
 
 # ================================= 配置加载 =================================
 def load_config():
@@ -241,19 +242,11 @@ def decompress_data(data: bytes) -> bytes:
     return zlib.decompress(data)
 
 # ================================= 记录日志 =================================
-def setup_logger(prefix: str = None) -> logger:
-    """
-    配置loguru日志处理
-    Args:
-        prefix: 日志文件前缀，默认使用调用者的文件名
-    Returns:
-        logger: 配置好的loguru日志记录器
-    """    
+def setup_logger(prefix=None):
+    """设置日志记录器"""
     if prefix is None:
-        # 获取调用者的文件名（不含扩展名）作为前缀
-        import inspect
-        caller_frame = inspect.stack()[1]
-        caller_file = os.path.basename(caller_frame.filename)
+        # 获取调用者的文件名作为前缀
+        caller_file = os.path.basename(inspect.stack()[1].filename)
         prefix = os.path.splitext(caller_file)[0]
     
     # 获取调用者脚本所在目录
@@ -263,28 +256,24 @@ def setup_logger(prefix: str = None) -> logger:
     # 移除默认的sink
     logger.remove()
     
-    # 检查是否已经配置了相同的sink
-    has_stderr_sink = any(sink["sink"] == sys.stderr for sink in logger._core.handlers)
-    has_file_sink = any(sink["sink"] == log_file for sink in logger._core.handlers)
+    # 添加控制台输出，支持中文
+    logger.add(
+        sink=sys.stderr,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+        level="INFO",
+        encoding="utf-8"
+    )
     
-    # 只在没有配置时添加控制台输出
-    if not has_stderr_sink:
-        logger.add(
-            sink=sys.stderr,
-            format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-            level="INFO"
-        )
-    
-    # 只在没有配置时添加文件输出
-    if not has_file_sink:
-        logger.add(
-            sink=log_file,
-            format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
-            level="INFO",
-            rotation="10 MB",  # 当文件达到10MB时轮转
-            retention="1 week",  # 保留1周的日志
-            encoding="utf-8",
-            enqueue=True  # 线程安全
-        )
+    # 添加文件输出，支持中文
+    logger.add(
+        sink=log_file,
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+        level="INFO",
+        rotation="1 day",
+        retention="7 days",
+        encoding="utf-8",  # 确保中文正确写入文件
+        enqueue=True      # 启用异步写入，提高性能
+    )
     
     return logger
+
