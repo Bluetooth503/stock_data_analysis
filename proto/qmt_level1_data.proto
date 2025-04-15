@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package stock;
+
+message StockQuote {
+    string ts_code = 1;           // 股票代码
+    int64 timestamp = 2;          // 时间戳
+    double last_price = 3;        // 最新价
+    double open_price = 4;        // 开盘价
+    double high_price = 5;        // 最高价
+    double low_price = 6;         // 最低价
+    double pre_close = 7;         // 昨收价
+    int64 volume = 8;             // 成交量
+    double amount = 9;            // 成交额
+    int64 pvolume = 10;          // 持仓量
+    int32 transaction_num = 11;   // 成交笔数
+    int32 stock_status = 12;      // 股票状态
+
+    // 买一到买十档
+    double bid_price1 = 13;
+    int64 bid_volume1 = 14;
+    double bid_price2 = 15;
+    int64 bid_volume2 = 16;
+    double bid_price3 = 17;
+    int64 bid_volume3 = 18;
+    double bid_price4 = 19;
+    int64 bid_volume4 = 20;
+    double bid_price5 = 21;
+    int64 bid_volume5 = 22;
+    double bid_price6 = 23;
+    int64 bid_volume6 = 24;
+    double bid_price7 = 25;
+    int64 bid_volume7 = 26;
+    double bid_price8 = 27;
+    int64 bid_volume8 = 28;
+    double bid_price9 = 29;
+    int64 bid_volume9 = 30;
+    double bid_price10 = 31;
+    int64 bid_volume10 = 32;
+
+    // 卖一到卖十档
+    double ask_price1 = 33;
+    int64 ask_volume1 = 34;
+    double ask_price2 = 35;
+    int64 ask_volume2 = 36;
+    double ask_price3 = 37;
+    int64 ask_volume3 = 38;
+    double ask_price4 = 39;
+    int64 ask_volume4 = 40;
+    double ask_price5 = 41;
+    int64 ask_volume5 = 42;
+    double ask_price6 = 43;
+    int64 ask_volume6 = 44;
+    double ask_price7 = 45;
+    int64 ask_volume7 = 46;
+    double ask_price8 = 47;
+    int64 ask_volume8 = 48;
+    double ask_price9 = 49;
+    int64 ask_volume9 = 50;
+    double ask_price10 = 51;
+    int64 ask_volume10 = 52;
+}
+
+message StockQuoteBatch {
+    int64 batch_timestamp = 1;     // 批次时间戳
+    string publisher_id = 2;       // 发布者ID
+    repeated StockQuote quotes = 3; // 行情数据列表
+}

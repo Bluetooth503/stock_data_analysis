@@ -190,3 +190,5 @@ xtquant
 *.parquet
 *.txt
 *.code-workspace
+*.public
+*.secret

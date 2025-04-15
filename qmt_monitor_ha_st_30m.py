@@ -7,6 +7,8 @@ from xtquant.xttype import StockAccount
 from xtquant import xtconstant
 xtdata.enable_hello = False
 
+# 配置日志
+logger = setup_logger()
 
 # ================================= 配置管理 =================================
 class Config:
@@ -44,7 +46,7 @@ class QMTTrader:
         log_msg += f"股票: {code}, 价格: {price}"
         if volume > 0:
             log_msg += f", 数量: {volume}, 金额: {round(price * volume, 2)}元"
-        print(log_msg)
+        logger.info(log_msg) if success else logger.error(log_msg)
         
     def _load_processed_klines(self):
         """从文件加载已处理的K线记录"""
@@ -54,7 +56,7 @@ class QMTTrader:
                     return set(line.strip() for line in f)
             return set()
         except Exception as e:
-            print(f"加载已处理K线记录出错: {str(e)}")
+            logger.error(f"加载已处理K线记录出错: {str(e)}")
             return set()
             
     def _save_processed_kline(self, kline_key):
@@ -63,16 +65,16 @@ class QMTTrader:
             with open(self.config.trading_config['processed_klines_file'], "a") as f:
                 f.write(f"{kline_key}\n")
         except Exception as e:
-            print(f"保存K线记录出错: {str(e)}")
+            logger.error(f"保存K线记录出错: {str(e)}")
 
     def _clear_processed_klines(self):
         """清空已处理的K线记录"""
         try:
             if os.path.exists(self.config.trading_config['processed_klines_file']):
                 os.remove(self.config.trading_config['processed_klines_file'])
-                print("已清空K线记录")
+                logger.info("已清空K线记录")
         except Exception as e:
-            print(f"清空K线记录出错: {str(e)}")
+            logger.error(f"清空K线记录出错: {str(e)}")
 
     def init_trader(self):
         """初始化QMT交易接口"""
@@ -84,7 +86,7 @@ class QMTTrader:
         self.xt_trader.connect()
         time.sleep(3)
         account_status = self.xt_trader.query_account_status()
-        print(f"账户状态: {account_status}")
+        logger.info(f"账户状态: {account_status}")
         return self.xt_trader, self.acc
     
     @retry_on_failure(max_retries=3, delay=1)
@@ -116,21 +118,21 @@ class QMTTrader:
         """订阅股票行情"""
         for code in code_list:
             # 订阅5分钟K线数据
-            xtdata.download_history_data(code, period='5m', start_time='20240101', incrementally=True)
+            # xtdata.download_history_data(code, period='5m', start_time='20240101', incrementally=True)
             kline_seq = xtdata.subscribe_quote(code, '5m')
             if kline_seq > 0:  # 订阅成功
                 self.subscribed_codes[f"{code}_kline"] = kline_seq
-                print(f"订阅 {code} 5分钟数据成功，订阅号: {kline_seq}")
+                logger.info(f"订阅 {code} 5分钟数据成功，订阅号: {kline_seq}")
             else:
-                print(f"订阅 {code} 5分钟数据失败")
+                logger.error(f"订阅 {code} 5分钟数据失败")
                 
             # 订阅tick数据
             tick_seq = xtdata.subscribe_quote(code, 'tick')
             if tick_seq > 0:  # 订阅成功
                 self.subscribed_codes[f"{code}_tick"] = tick_seq
-                print(f"订阅 {code} tick数据成功，订阅号: {tick_seq}")
+                logger.info(f"订阅 {code} tick数据成功，订阅号: {tick_seq}")
             else:
-                print(f"订阅 {code} tick数据失败")
+                logger.error(f"订阅 {code} tick数据失败")
         return True
 
 
@@ -138,7 +140,7 @@ class QMTTrader:
         """使用订阅号取消所有股票订阅"""
         for code_type, seq in list(self.subscribed_codes.items()):
             xtdata.unsubscribe_quote(seq)
-            print(f"取消订阅 {code_type}(订阅号:{seq}) 成功")
+            logger.info(f"取消订阅 {code_type}(订阅号:{seq}) 成功")
             del self.subscribed_codes[code_type]
         
         # 以防万一，清空订阅字典
@@ -151,7 +153,7 @@ class QMTTrader:
         # 1. K线重复检查
         kline_key = f"{code}_{trade_time.strftime('%Y%m%d%H%M')}"
         if kline_key in self._load_processed_klines():
-            print(f"跳过重复K线信号 - 股票:{code}, 信号:{signal}, K线时间:{trade_time}")
+            logger.info(f"跳过重复K线信号 - 股票:{code}, 信号:{signal}, K线时间:{trade_time}")
             return
         self._save_processed_kline(kline_key)
         
@@ -159,7 +161,7 @@ class QMTTrader:
         tick = self.get_stock_tick(code)
         if not (tick and code in tick and tick[code]):
             error_msg = f"无法获取股票{code}的tick数据"
-            print(error_msg)
+            logger.error(error_msg)
             send_wecom("获取Tick数据失败", error_msg)
             return
             
@@ -232,14 +234,14 @@ def get_top_stocks():
         # 按股票代码降序排序
         df = df.sort_values('ts_code', ascending=False)
         
-        print(f"监控标的数量: {len(df)}")
+        logger.info(f"监控标的数量: {len(df)}")
         return df
         
     except FileNotFoundError:
-        print("错误: 未找到qmt_monitor_stocks_calmar.csv文件")
+        logger.error("错误: 未找到qmt_monitor_stocks_calmar.csv文件")
         return pd.DataFrame()
     except Exception as e:
-        print(f"读取监控标的时发生错误: {str(e)}")
+        logger.error(f"读取监控标的时发生错误: {str(e)}")
         return pd.DataFrame()
 
 def calculate_signals(args):
@@ -276,7 +278,7 @@ def run_market_analysis():
     if datetime.now().strftime('%H%M') == '0900':
         trader._clear_processed_klines()
     
-    print(f"\n开始监控市场数据... 当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"\n开始监控市场数据... 当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     # 获取合成周期数据
     df = xtdata.get_market_data_ex([], code_list, period='30m', start_time='20240101')
@@ -393,19 +395,19 @@ if __name__ == "__main__":
                 time.sleep(1)
             except Exception as e:
                 error_msg = f"程序运行出错: {str(e)}"
-                print(error_msg)
+                logger.error(error_msg)
                 send_wecom("程序运行错误", error_msg)
                 time.sleep(5)
                 continue
 
     except KeyboardInterrupt:
-        print("\n检测到退出信号，正在清理...")
+        logger.info("\n检测到退出信号，正在清理...")
         if trader:
             trader.unsubscribe_stocks()
-        print("程序已安全退出")
+        logger.info("程序已安全退出")
     except Exception as e:
         error_msg = f"程序初始化失败: {str(e)}"
-        print(error_msg)
+        logger.error(error_msg)
         send_wecom("程序初始化错误", error_msg)
         if trader:
             trader.unsubscribe_stocks()

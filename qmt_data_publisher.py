@@ -1,16 +1,15 @@
-import zmq
-import time
+# -*- coding: utf-8 -*-
+from qmt_common import *
+from proto.qmt_level1_data_pb2 import StockQuote, StockQuoteBatch
 from xtquant import xtdata
-from common.compression import compress_data
-from proto.stock_data_pb2 import StockQuote, StockQuoteBatch
-import ssl
-import secrets
-import os
-from qmt_common import load_config, get_zmq_keys
+xtdata.enable_hello = False
+
 
 class QMTDataPublisher:
     def __init__(self):
         self.config = load_config()
+        # 设置日志
+        self.logger = setup_logger('qmt_publisher')
         
         # 初始化ZMQ
         self.context = zmq.Context()
@@ -25,10 +24,31 @@ class QMTDataPublisher:
         # 绑定端口
         port = self.config.get('zmq', 'port')
         self.socket.bind(f"tcp://*:{port}")
+        self.logger.info(f"ZMQ publisher已初始化并绑定到端口 {port}")
         
         self.batch_size = 100
         self.quotes_buffer = []
+        self.subscription_seq = None
         
+        # 添加统计信息
+        self.stats = {
+            'total_messages': 0,
+            'last_message_time': None,
+            'start_time': datetime.now()
+        }
+
+    def log_stats(self):
+        """记录运行统计信息"""
+        now = datetime.now()
+        runtime = now - self.stats['start_time']
+        msg_rate = self.stats['total_messages'] / runtime.total_seconds() if runtime.total_seconds() > 0 else 0
+        
+        self.logger.info(
+            f"运行统计 - 总消息数: {self.stats['total_messages']}, "
+            f"消息率: {msg_rate:.2f}/秒, "
+            f"运行时长: {runtime}"
+        )
+
     def on_tick_data(self, datas):
         try:
             batch = StockQuoteBatch()
@@ -116,18 +136,64 @@ class QMTDataPublisher:
             # 发送数据
             self.socket.send_multipart([b"MARKET_DATA", compressed_data])
             
+            # 更新统计信息
+            self.stats['total_messages'] += 1
+            self.stats['last_message_time'] = datetime.now()
+            
+            # 每1000条消息记录一次统计信息
+            if self.stats['total_messages'] % 1000 == 0:
+                self.log_stats()
+            
         except Exception as e:
-            print(f"处理tick数据失败: {e}")
+            self.logger.error(f"处理tick数据失败: {str(e)}")
+            self.logger.exception(e)  # 记录完整的异常堆栈
+
+    def unsubscribe_stocks(self):
+        """取消所有股票订阅"""
+        try:
+            if self.subscription_seq is not None:
+                xtdata.unsubscribe_quote(self.subscription_seq)
+                self.logger.info(f"已取消订阅 (订阅号: {self.subscription_seq})")
+                self.subscription_seq = None
+        except Exception as e:
+            self.logger.error(f"取消订阅失败: {str(e)}")
+            self.logger.exception(e)
 
     def run(self):
-        # 订阅股票行情
-        stock_list = xtdata.get_stock_list_in_sector('沪深A股')
-        seq = xtdata.subscribe_whole_quote(stock_list, callback=self.on_tick_data)
-        
-        print(f"已订阅 {len(stock_list)} 只股票")
-        
-        while True:
-            time.sleep(1)  # 保持进程运行
+        try:
+            # 订阅股票行情
+            stock_list = xtdata.get_stock_list_in_sector('沪深A股')
+            self.subscription_seq = xtdata.subscribe_whole_quote(stock_list, callback=self.on_tick_data)
+            
+            self.logger.info(f"已订阅 {len(stock_list)} 只股票, 订阅号: {self.subscription_seq}")
+            self.logger.info("数据发布服务已启动，等待接收行情数据...")
+            
+            # 每小时记录一次心跳和统计信息
+            last_heartbeat = time.time()
+            while True:
+                current_time = time.time()
+                if current_time - last_heartbeat >= 3600:  # 每小时
+                    self.logger.info("服务运行正常 - 心跳检查")
+                    self.log_stats()
+                    last_heartbeat = current_time
+                time.sleep(1)
+                
+        except KeyboardInterrupt:
+            self.logger.info("\n检测到退出信号，正在清理...")
+            self.unsubscribe_stocks()
+            self.logger.info("程序已安全退出")
+        except Exception as e:
+            self.logger.error(f"运行出错: {str(e)}")
+            self.logger.exception(e)
+            self.unsubscribe_stocks()
+            raise
+        finally:
+            # 记录最终统计信息
+            self.log_stats()
+            # 确保在任何情况下都清理ZMQ资源
+            self.socket.close()
+            self.context.term()
+            self.logger.info("已清理所有资源")
 
 if __name__ == "__main__":
     publisher = QMTDataPublisher()

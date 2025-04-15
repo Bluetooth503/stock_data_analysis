@@ -11,6 +11,10 @@ from functools import wraps
 from typing import Dict, List, Tuple
 from tqdm import tqdm
 import zmq
+import zlib
+from loguru import logger
+import sys
+
 
 # ================================= 配置加载 =================================
 def load_config():
@@ -202,11 +206,9 @@ def check_signal_change(df):
         return 'SELL'
     return None
 
+# ================================= 生成ZeroMQ密钥对 =================================
 def get_zmq_keys(config):
-    """获取或生成ZMQ密钥对
-    Returns:
-        tuple: (public_key, secret_key)
-    """
+    """获取或生成ZMQ密钥对"""
     keys_dir = config.get('zmq', 'keys_dir')
     os.makedirs(keys_dir, exist_ok=True)
     
@@ -228,3 +230,61 @@ def get_zmq_keys(config):
             secret_key = f.read()
     
     return public_key, secret_key
+
+# ================================= zlib压缩,解压缩 =================================
+def compress_data(data: bytes) -> bytes:
+    """使用zlib压缩二进制数据"""
+    return zlib.compress(data)
+
+def decompress_data(data: bytes) -> bytes:
+    """使用zlib解压缩二进制数据"""
+    return zlib.decompress(data)
+
+# ================================= 记录日志 =================================
+def setup_logger(prefix: str = None) -> logger:
+    """
+    配置loguru日志处理
+    Args:
+        prefix: 日志文件前缀，默认使用调用者的文件名
+    Returns:
+        logger: 配置好的loguru日志记录器
+    """    
+    if prefix is None:
+        # 获取调用者的文件名（不含扩展名）作为前缀
+        import inspect
+        caller_frame = inspect.stack()[1]
+        caller_file = os.path.basename(caller_frame.filename)
+        prefix = os.path.splitext(caller_file)[0]
+    
+    # 获取调用者脚本所在目录
+    caller_dir = os.path.dirname(os.path.abspath(inspect.stack()[1].filename))
+    log_file = os.path.join(caller_dir, f'{prefix}.log')
+    
+    # 移除默认的sink
+    logger.remove()
+    
+    # 检查是否已经配置了相同的sink
+    has_stderr_sink = any(sink["sink"] == sys.stderr for sink in logger._core.handlers)
+    has_file_sink = any(sink["sink"] == log_file for sink in logger._core.handlers)
+    
+    # 只在没有配置时添加控制台输出
+    if not has_stderr_sink:
+        logger.add(
+            sink=sys.stderr,
+            format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+            level="INFO"
+        )
+    
+    # 只在没有配置时添加文件输出
+    if not has_file_sink:
+        logger.add(
+            sink=log_file,
+            format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+            level="INFO",
+            rotation="10 MB",  # 当文件达到10MB时轮转
+            retention="1 week",  # 保留1周的日志
+            encoding="utf-8",
+            enqueue=True  # 线程安全
+        )
+    
+    return logger
