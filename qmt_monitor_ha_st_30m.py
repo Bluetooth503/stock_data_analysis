@@ -278,7 +278,7 @@ def run_market_analysis():
     if datetime.now().strftime('%H%M') == '0900':
         trader._clear_processed_klines()
     
-    logger.info(f"\n开始监控市场数据... 当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"开始监控市场数据... 当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     # 获取合成周期数据
     df = xtdata.get_market_data_ex([], code_list, period='30m', start_time='20240101')
