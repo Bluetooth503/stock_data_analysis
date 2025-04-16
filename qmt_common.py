@@ -260,16 +260,17 @@ def setup_logger(prefix=None):
     logger.add(
         sink=sys.stderr,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-        level="DEBUG"  # 改为DEBUG级别以显示更多信息
+        level="INFO"  # 使用INFO级别，只显示必要信息
     )
 
     # 添加文件输出
     logger.add(
         sink=log_file,
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
-        level="DEBUG",  # 改为DEBUG级别以记录更多信息
-        rotation="1 day",
-        retention="7 days",
+        level="INFO",  # 使用INFO级别，只记录必要信息
+        rotation="10 MB",
+        retention="30 days",
+        encoding="utf-8",  # 添加UTF-8编码支持，解决中文乱码问题
         enqueue=True      # 启用异步写入，提高性能
     )
 

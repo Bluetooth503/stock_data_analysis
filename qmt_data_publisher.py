@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 from qmt_common import *
 from proto.qmt_level1_data_pb2 import StockQuote, StockQuoteBatch
@@ -9,7 +10,7 @@ class QMTDataPublisher:
     def __init__(self):
         self.config = load_config()
         # 设置日志
-        self.logger = setup_logger('qmt_publisher')
+        self.logger = setup_logger()
 
         # 初始化ZMQ
         self.context = zmq.Context()
@@ -55,14 +56,7 @@ class QMTDataPublisher:
             batch.batch_timestamp = int(time.time() * 1000)
             batch.publisher_id = "QMT_PUBLISHER_001"
 
-            # 记录第一条数据的详细信息，用于调试
-            if datas and len(datas) > 0:
-                first_code = list(datas.keys())[0]
-                first_tick = datas[first_code]
-                self.logger.info(f"原始数据样例 - 代码: {first_code}")
-                self.logger.info(f"成交笔数: {first_tick.get('transactionNum', 'N/A')}, 类型: {type(first_tick.get('transactionNum', 0))}")
-                self.logger.info(f"买卖档位数量: 买档={len(first_tick.get('bidPrice', []))}, 卖档={len(first_tick.get('askPrice', []))}")
-                self.logger.info(f"原始数据字段: {list(first_tick.keys())}")
+            # 处理数据，不记录调试日志
 
             for code, tick in datas.items():
                 quote = StockQuote()
@@ -150,9 +144,7 @@ class QMTDataPublisher:
             self.stats['total_messages'] += 1
             self.stats['last_message_time'] = datetime.now()
 
-            # 每1000条消息记录一次统计信息
-            if self.stats['total_messages'] % 1000 == 0:
-                self.log_stats()
+            # 不在这里记录统计信息，改为只在每小时心跳时记录
 
         except Exception as e:
             self.logger.error(f"处理tick数据失败: {str(e)}")
