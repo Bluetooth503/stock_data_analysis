@@ -76,12 +76,11 @@ class QMTDataPublisher:
                 quote.high_price = tick['high']
                 quote.low_price = tick['low']
                 quote.pre_close = tick['lastClose']
-                quote.volume = tick['volume']
                 quote.amount = tick['amount']
+                quote.volume = tick['volume']
                 quote.pvolume = tick['pvolume']
-                # 确保transaction_num有值，如果原始数据中没有或为None，则设为0
-                quote.transaction_num = tick.get('transactionNum', 0) if tick.get('transactionNum') is not None else 0
-                quote.stock_status = tick.get('status', 0)
+                quote.stock_status = tick['stockStatus']
+                quote.transaction_num = tick['transactionNum']
 
                 # 买一到买十档
                 bid_prices = tick.get('bidPrice', [])
@@ -143,8 +142,6 @@ class QMTDataPublisher:
             # 更新统计信息
             self.stats['total_messages'] += 1
             self.stats['last_message_time'] = datetime.now()
-
-            # 不在这里记录统计信息，改为只在每小时心跳时记录
 
         except Exception as e:
             self.logger.error(f"处理tick数据失败: {str(e)}")

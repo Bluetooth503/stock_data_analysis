@@ -404,3 +404,23 @@ ALTER TABLE a_stock_level1_data SET (
 
 -- 设置压缩策略（比如7天后的数据自动压缩）
 SELECT add_compression_policy('a_stock_level1_data', INTERVAL '7 days');
+
+
+
+
+
+CREATE TABLE "public"."a_stock_5m_kline_wfq_baostock" (
+  "trade_time" timestamp(6) NOT NULL,
+  "ts_code" varchar(20) COLLATE "pg_catalog"."default" NOT NULL,
+  "open" numeric(18,4),
+  "high" numeric(18,4),
+  "low" numeric(18,4),
+  "close" numeric(18,4),
+  "volume" numeric(18,4),
+  "amount" numeric(18,4),
+  "adjust_flag" int4,
+  CONSTRAINT "a_stock_5m_kline_wfq_baostock_pkey" PRIMARY KEY ("trade_time", "ts_code")
+);
+ALTER TABLE "public"."a_stock_5m_kline_wfq_baostock" OWNER TO "postgres";
+CREATE INDEX "a_stock_5m_kline_wfq_baostock_trade_time_idx" ON "public"."a_stock_5m_kline_wfq_baostock" USING btree ("trade_time" "pg_catalog"."timestamp_ops" ASC NULLS LAST);
+CREATE INDEX "idx_5m_kline_wfq_baostock_ts_code" ON "public"."a_stock_5m_kline_wfq_baostock" USING btree ("ts_code" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST);
