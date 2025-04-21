@@ -135,24 +135,6 @@ def save_to_database_batch(df_list, engine):
     except Exception as e:
         logger.error(f"保存数据到数据库时发生错误: {str(e)}")
 
-# 新增函数: 处理指定的股票和日期范围
-def process_specific_stocks(stocks, start_date, end_date):
-    """处理指定股票在给定日期范围内的数据"""
-    results = []
-    trade_dates = get_trade_dates_between(start_date, end_date)  # 获取指定日期范围内的交易日
-    
-    for current_date in trade_dates:
-        for ts_code in stocks:
-            try:
-                df = download_5min_kline(ts_code=ts_code, start_date=current_date, end_date=current_date)
-                if not df.empty:
-                    results.append(df)
-            except Exception as e:
-                logger.error(f"处理股票 {ts_code} 在 {current_date} 时发生错误: {str(e)}")
-    
-    return results
-
-# 在主函数中调用新函数
 def main():
     """主函数"""
     # 登录 baostock
@@ -161,8 +143,7 @@ def main():
     try:
         # 获取最新记录时间
         latest_time = (pd.to_datetime(get_latest_record_time(engine)) + pd.Timedelta(days=1)).strftime('%Y%m%d')
-        # latest_time = '20190101'
-        end_time = '20230631'
+        end_time = '20250420'
 
         # 获取股票列表
         stocks = stock_list['ts_code'].tolist()
@@ -179,11 +160,6 @@ def main():
             # 保存结果到数据库
             if results:
                 save_to_database_batch(results, engine)
-
-        # 调用新函数处理指定股票和日期范围
-        specific_results = process_specific_stocks(stocks, '20230601', '20230610')  # 示例日期范围
-        if specific_results:
-            save_to_database_batch(specific_results, engine)
     
     except Exception as e:
         logger.error(f"程序执行过程中发生错误: {str(e)}")

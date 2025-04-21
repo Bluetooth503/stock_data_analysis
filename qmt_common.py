@@ -24,6 +24,41 @@ def load_config():
     config.read(os.path.join(os.path.dirname(__file__), 'config.ini'), encoding='utf-8')
     return config
 
+# ================================= 记录日志 =================================
+def setup_logger(prefix=None):
+    """设置日志记录器"""
+    if prefix is None:
+        # 获取调用者的文件名作为前缀
+        caller_file = os.path.basename(inspect.stack()[1].filename)
+        prefix = os.path.splitext(caller_file)[0]
+
+    # 获取调用者脚本所在目录
+    caller_dir = os.path.dirname(os.path.abspath(inspect.stack()[1].filename))
+    log_file = os.path.join(caller_dir, f'{prefix}.log')
+
+    # 移除默认的sink
+    logger.remove()
+
+    # 添加控制台输出
+    logger.add(
+        sink=sys.stderr,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+        level="INFO"  # 使用INFO级别，只显示必要信息
+    )
+
+    # 添加文件输出
+    logger.add(
+        sink=log_file,
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+        level="INFO",  # 使用INFO级别，只记录必要信息
+        rotation="10 MB",
+        retention="30 days",
+        encoding="utf-8",  # 添加UTF-8编码支持，解决中文乱码问题
+        enqueue=True      # 启用异步写入，提高性能
+    )
+
+    return logger
+
 # ================================= 重试装饰器 =================================
 def retry_on_failure(max_retries=3, delay=1):
     """重试装饰器"""
@@ -108,8 +143,7 @@ def send_wecom(subject, content, config=None):
 
 # ================================= Heikin-Ashi SuperTrend 计算 =================================
 def ha_st_pine(df, length, multiplier):
-    # ========== Heikin Ashi计算 ==========
-    '''direction=1上涨，-1下跌'''
+    '''Heikin Ashi计算:direction=1上涨,-1下跌.'''
     df = df.copy()
 
     # 使用向量化操作计算HA价格
@@ -138,7 +172,6 @@ def ha_st_pine(df, length, multiplier):
         'ha_close': ha_close
     })).min(axis=1)
 
-    # ========== ATR计算 ==========
     # 使用向量化操作计算TR
     tr1 = ha_high - ha_low
     tr2 = (ha_high - ha_close.shift(1)).abs()
@@ -156,7 +189,7 @@ def ha_st_pine(df, length, multiplier):
     for i in range(length, len(df)):
         rma.iloc[i] = alpha * tr.iloc[i] + (1 - alpha) * rma.iloc[i-1]
 
-    # ========== SuperTrend计算 ==========
+    # SuperTrend计算
     src = (ha_high + ha_low) / 2
     upper_band = pd.Series(index=df.index, dtype=float)
     lower_band = pd.Series(index=df.index, dtype=float)
@@ -198,6 +231,7 @@ def ha_st_pine(df, length, multiplier):
 
 # ================================= Heikin-Ashi SuperTrend 信号判断 =================================
 def check_signal_change(df):
+    """Heikin-Ashi SuperTrend 信号判断"""
     if len(df) < 2:
         return None
     last_two = df.tail(2)
@@ -241,38 +275,100 @@ def decompress_data(data: bytes) -> bytes:
     """使用zlib解压缩二进制数据"""
     return zlib.decompress(data)
 
-# ================================= 记录日志 =================================
-def setup_logger(prefix=None):
-    """设置日志记录器"""
-    if prefix is None:
-        # 获取调用者的文件名作为前缀
-        caller_file = os.path.basename(inspect.stack()[1].filename)
-        prefix = os.path.splitext(caller_file)[0]
+# ================================= 交易日判断与等待 =================================
+def check_trading_day(date_str=None, pro_api=None, logger=None):
+    """检查指定日期是否为交易日"""
+    # 如果没有提供日期，使用当前日期
+    if date_str is None:
+        date_str = datetime.now().strftime('%Y%m%d')
 
-    # 获取调用者脚本所在目录
-    caller_dir = os.path.dirname(os.path.abspath(inspect.stack()[1].filename))
-    log_file = os.path.join(caller_dir, f'{prefix}.log')
+    # 如果没有提供pro_api，则自动创建
+    if pro_api is None:
+        import tushare as ts
+        config = load_config()
+        token = config.get('tushare', 'token')
+        pro_api = ts.pro_api(token)
 
-    # 移除默认的sink
-    logger.remove()
+    # 查询交易日历
+    calendar = pro_api.trade_cal(start_date=date_str, end_date=date_str)
+    is_trading = calendar.iloc[0]['is_open'] == 1
 
-    # 添加控制台输出
-    logger.add(
-        sink=sys.stderr,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-        level="INFO"  # 使用INFO级别，只显示必要信息
-    )
+    # 记录日志
+    if logger:
+        if is_trading:
+            if date_str == datetime.now().strftime('%Y%m%d'):
+                logger.info(f"当前日期 {date_str} 是交易日")
+            else:
+                logger.info(f"日期 {date_str} 是交易日")
+        else:
+            if date_str == datetime.now().strftime('%Y%m%d'):
+                logger.info(f"当前日期 {date_str} 不是交易日")
+            else:
+                logger.info(f"日期 {date_str} 不是交易日")
 
-    # 添加文件输出
-    logger.add(
-        sink=log_file,
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
-        level="INFO",  # 使用INFO级别，只记录必要信息
-        rotation="10 MB",
-        retention="30 days",
-        encoding="utf-8",  # 添加UTF-8编码支持，解决中文乱码问题
-        enqueue=True      # 启用异步写入，提高性能
-    )
+    return is_trading
 
-    return logger
+
+def is_trade_date(date_str, pro_api=None):
+    return check_trading_day(date_str, pro_api, None)
+
+def wait_until_next_morning(target_hour=8, target_minute=0, logger=None):
+    """等待到第二天早上指定时间"""
+    # 计算到明天早上目标时间的时间
+    now = datetime.now()
+    tomorrow = now + timedelta(days=1)
+    next_check_time = tomorrow.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+
+    # 计算需要等待的秒数
+    wait_seconds = (next_check_time - now).total_seconds()
+
+    if logger:
+        logger.info(f"当前时间: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info(f"将等待到明天{target_hour}点{target_minute}分: {next_check_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    # 分段等待，每小时检查一次
+    while wait_seconds > 0:
+        sleep_time = min(wait_seconds, 3600)  # 最多等待1小时
+        time.sleep(sleep_time)
+        wait_seconds -= sleep_time
+        if wait_seconds > 0 and logger:
+            logger.info(f"还需等待 {wait_seconds/3600:.2f} 小时")
+
+def wait_until_time_today(target_hour, target_minute=0, logger=None):
+    """等待到当天的指定时间"""
+    now = datetime.now()
+    target_time = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+
+    # 如果当前时间已经超过目标时间，返回False
+    if now >= target_time:
+        return False
+
+    wait_seconds = (target_time - now).total_seconds()
+
+    if logger:
+        logger.info(f"当前时间: {now.strftime('%H:%M:%S')}")
+        logger.info(f"等待到今天{target_hour}点{target_minute}分: {target_time.strftime('%H:%M:%S')}")
+
+    time.sleep(wait_seconds)
+    return True
+
+
+
+def wait_for_trading_day(target_hour=8, target_minute=0, pro_api=None, logger=None):
+    """等待直到交易日的指定时间"""
+    # 如果当前时间早于目标时间，等待到目标时间
+    wait_until_time_today(target_hour, target_minute, logger)
+
+    # 检查当天是否为交易日
+    is_trading = check_trading_day(None, pro_api, logger)
+
+    # 如果不是交易日，等待到下一天再检查
+    while not is_trading:
+        if logger:
+            logger.info(f"等待到下一个交易日")
+        wait_until_next_morning(target_hour, target_minute, logger)
+        is_trading = check_trading_day(None, pro_api, logger)
+
+    return is_trading
+
 
