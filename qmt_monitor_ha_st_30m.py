@@ -5,24 +5,17 @@ from xtquant import xtdata
 from xtquant.xttrader import XtQuantTrader
 from xtquant.xttype import StockAccount
 from xtquant import xtconstant
-import tushare as ts
 xtdata.enable_hello = False
 
 # ================================= 配置日志 =================================
 logger = setup_logger()
 
-# ================================= 初始化tushare =================================
-config = load_config()
-token = config.get('tushare', 'token')
-pro = ts.pro_api(token)
-
 # ================================= 配置管理 =================================
 class Config:
     """配置管理类"""
-    def __init__(self, config=None):
+    def __init__(self):
         # 如果没有传入配置，则使用全局配置
-        self.config = config if config is not None else load_config()
-        # 交易相关配置
+        self.config = load_config()
         self.trading_config = {
             'qmt_path': r'C:\国金证券QMT交易端\userdata_mini',
             'buy_threshold': 20000,  # 买入资金阈值
@@ -38,8 +31,7 @@ class Config:
 class QMTTrader:
     """QMT交易类"""
     def __init__(self):
-        # 使用全局配置初始化Config类
-        self.config = Config(config)
+        self.config = Config()
         self.xt_trader = None
         self.acc = None
         self.subscribed_codes = {}
@@ -52,7 +44,7 @@ class QMTTrader:
         # 构建日志信息
         log_msg = f"{action}委托{status} - 股票: {code} - 价格: {price}"
 
-        # 添加数量和金额信息（如果有）
+        # 添加数量和金额信息
         if volume > 0:
             log_msg += f" - 数量: {volume} - 金额: {round(price * volume, 2)}元"
 
@@ -109,7 +101,6 @@ class QMTTrader:
                 logger.error(f"订阅 {code} K线数据失败")
         return True
 
-
     def unsubscribe_stocks(self):
         """使用订阅号取消所有股票订阅"""
         for code_type, seq in list(self.subscribed_codes.items()):
@@ -121,8 +112,7 @@ class QMTTrader:
         self.subscribed_codes.clear()
         return True
 
-
-    def process_signal(self, code, signal, trade_time, current_price, stock_params):
+    def process_signal(self, code, signal, trade_time, current_price, stock_params, positions_dict):
         """处理交易信号"""
         # 1. 获取最新行情
         tick = self.get_stock_tick(code)
@@ -152,51 +142,47 @@ class QMTTrader:
         盈亏比: {stock_params['profit_factor']}
         """
 
-        # 3. 处理买卖信号
-        if signal == "BUY":
-            # 买入使用卖一价或最新价
-            base_price = ask_price if ask_price > 0 else last_price
-            price_ratio = self.config.trading_config['buy_price_ratio']
-            price = round(base_price * price_ratio, 2)
+        # 3. 检查持仓状态
+        has_position = code in positions_dict and positions_dict[code] > 0
 
-            # 计算买入数量（确保为100的整数倍）
-            min_vol = self.config.trading_config['min_volume']
-            calc_vol = int(self.config.trading_config['buy_threshold'] / price) // 100 * 100
-            volume = max(min_vol, calc_vol)
-        else:  # SELL
-            # 检查是否有持仓
-            positions_dict = {pos.stock_code: pos.volume for pos in self.get_positions()}
-            if not (code in positions_dict and positions_dict[code] > 0):
+        # 4. 处理买卖信号
+        if signal == "BUY":
+            # 如果已持有该股票，跳过买入
+            if has_position:
+                logger.info(f"跳过买入信号 - 已持有股票{code}")
                 return
 
-            # 卖出使用买一价或最新价
-            base_price = bid_price if bid_price > 0 else last_price
-            price_ratio = self.config.trading_config['sell_price_ratio']
-            price = round(base_price * price_ratio, 2)
+            # 买入价格计算逻辑：优先使用卖一价，如果卖一价为0则使用最新价*买入价格比例
+            if ask_price > 0:
+                price = round(ask_price, 2)  # 直接使用卖一价
+            else:
+                price = round(last_price * self.config.trading_config['buy_price_ratio'], 2)  # 使用最新价乘以比例
+
+            # 确保买入数量为100的整数倍
+            volume = max(
+                self.config.trading_config['min_volume'],
+                int(self.config.trading_config['buy_threshold'] / price) // 100 * 100
+            )
+        else:  # SELL
+            # 如果没有持仓，跳过卖出
+            if not has_position:
+                return
+
+            # 卖出价格计算逻辑：优先使用买一价，如果买一价为0则使用最新价*卖出价格比例
+            if bid_price > 0:
+                price = round(bid_price, 2)  # 直接使用买一价
+            else:
+                price = round(last_price * self.config.trading_config['sell_price_ratio'], 2)  # 使用最新价乘以比例
 
             # 卖出全部持仓
             volume = positions_dict[code]
 
         # 5. 执行交易并发送通知
-        order_seq, success = self.place_order(code, signal, volume, price)
-
-        # 记录交易日志
-        self._log_order(code, signal, price, volume, success)
-
-        # 交易成功时发送通知
+        seq, success = self.place_order(code, signal, volume, price)
         if success:
-            # 添加交易详情到通知内容
-            trade_amount = round(price * volume, 2)
-            trade_details = f"\n交易详情:\n委托序号: {order_seq}\n委托价格: {price}\n委托数量: {volume}\n交易金额: {trade_amount}"
-            send_wecom(subject, content + trade_details)
-
-
-
-# ================================= 交易日判断 =================================
-def update_trading_day_flag():
-    """检查当天是否为交易日，并设置全局标志"""
-    global is_today_trading_day
-    is_today_trading_day = check_trading_day(pro, logger)
+            content += f"\n交易详情:\n委托价格: {price}\n委托数量: {volume}\n交易金额: {round(price * volume, 2)}"
+            send_wecom(subject, content)
+        self._log_order(code, signal, price, volume, success)
 
 # ================================= 市场分析 =================================
 def get_top_stocks():
@@ -253,11 +239,12 @@ def calculate_signals(args):
 
 def run_market_analysis():
     """运行市场分析"""
-    # 判断当前是否为交易日
-    if not is_today_trading_day:
-        return
-
     logger.info(f"开始监控市场数据... 当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    # 获取当前持仓信息
+    positions = trader.get_positions()
+    positions_dict = {pos.stock_code: pos.volume for pos in positions}
+    logger.info(f"当前持仓数量: {len(positions)}, 持仓股票: {list(positions_dict.keys())}")
 
     # 获取合成周期数据
     df = xtdata.get_market_data_ex([], code_list, period='30m', start_time='20240101')
@@ -286,15 +273,12 @@ def run_market_analysis():
             result['signal'],
             result['trade_time'],
             result['current_price'],
-            result['params']
+            result['params'],
+            positions_dict  # 传递持仓字典
         )
 
 def check_positions():
     """检查持仓状态，对下跌趋势未卖出的股票发出提醒"""
-    # 判断当前是否为交易日
-    if not is_today_trading_day:
-        return
-
     # 获取当前持仓
     positions = trader.get_positions()
     if not positions:
@@ -327,13 +311,10 @@ def check_positions():
 
 def setup_schedule():
     """设置定时任务"""
-    # 每天8:00检查是否为交易日
-    schedule.every().day.at("08:00:00").do(update_trading_day_flag)
-
     trading_hours = [
         (9, 35),  # 开盘特殊时段
         (10, 0), (10, 30), (11, 0), (11, 30),  # 上午交易时段
-        (13, 30), (14, 0), (14, 30),           # 下午交易时段
+        (13, 0), (13, 30), (14, 0), (14, 30),  # 下午交易时段
         (14, 55)  # 收盘前特殊时段
     ]
 
@@ -355,58 +336,37 @@ def setup_schedule():
 
 # ================================= 主程序 =================================
 if __name__ == "__main__":
-    # 全局变量，标记今天是否为交易日
-    is_today_trading_day = False
     trader = None
     try:
-        # 主程序循环，确保程序持续运行
+        # 初始化交易接口
+        trader = QMTTrader()
+        trader.init_trader()
+
+        # 获取持仓并生成监控列表
+        positions = trader.get_positions()
+        top_stocks = get_top_stocks()
+        code_list = top_stocks['ts_code'].tolist()
+
+        # 每次执行时下载基础周期数据
+        xtdata.download_history_data2(code_list, period='30m', start_time='20240101')
+
+        # 订阅行情数据
+        trader.subscribe_stocks(code_list)
+
+        # 设置定时任务
+        setup_schedule()
+
+        # 运行定时任务
         while True:
-            # 等待到交易日的8点
-            wait_for_trading_day(8, 0, pro, logger)
-
-            # 设置全局交易日标志
-            is_today_trading_day = True
-
-            # 如果是交易日，初始化交易系统并运行
-            # 初始化交易接口
-            trader = QMTTrader()
-            trader.init_trader()
-
-            # 获取持仓并生成监控列表
-            positions = trader.get_positions()
-            top_stocks = get_top_stocks()
-            code_list = top_stocks['ts_code'].tolist()
-
-            # 每次执行时下载基础周期数据
-            xtdata.download_history_data2(code_list, period='30m', start_time='20240101')
-
-            # 订阅行情数据
-            trader.subscribe_stocks(code_list)
-
-            # 设置定时任务
-            setup_schedule()
-
-            # 运行定时任务直到凌晨
             try:
-                while True:
-                    now = datetime.now()
-                    # 如果是凌晨，重新检查交易日
-                    if now.hour == 5 and now.minute == 0 and 0 <= now.second < 10:
-                        logger.info("凌晨时分，准备重新检查交易日")
-                        # 取消所有订阅
-                        trader.unsubscribe_stocks()
-                        break  # 跳出内层循环，重新检查交易日
-
-                    schedule.run_pending()
-                    time.sleep(1)
+                schedule.run_pending()
+                time.sleep(1)
             except Exception as e:
                 error_msg = f"程序运行出错: {str(e)}"
                 logger.error(error_msg)
                 send_wecom("程序运行错误", error_msg)
                 time.sleep(5)
-                # 取消所有订阅
-                if trader:
-                    trader.unsubscribe_stocks()
+                continue
 
     except KeyboardInterrupt:
         logger.info("\n检测到退出信号，正在清理...")

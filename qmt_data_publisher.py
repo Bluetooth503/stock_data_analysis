@@ -9,7 +9,6 @@ xtdata.enable_hello = False
 class QMTDataPublisher:
     def __init__(self):
         self.config = load_config()
-        # 设置日志
         self.logger = setup_logger()
 
         # 初始化ZMQ
@@ -26,9 +25,8 @@ class QMTDataPublisher:
         port = self.config.get('zmq', 'port')
         self.socket.bind(f"tcp://*:{port}")
         self.logger.info(f"ZMQ publisher已初始化并绑定到端口 {port}")
-
-        self.batch_size = 100
-        self.quotes_buffer = []
+        
+        # 订阅号
         self.subscription_seq = None
 
         # 添加统计信息
@@ -55,8 +53,6 @@ class QMTDataPublisher:
             batch = StockQuoteBatch()
             batch.batch_timestamp = int(time.time() * 1000)
             batch.publisher_id = "QMT_PUBLISHER_001"
-
-            # 处理数据，不记录调试日志
 
             for code, tick in datas.items():
                 quote = StockQuote()
@@ -167,14 +163,16 @@ class QMTDataPublisher:
             self.logger.info(f"已订阅 {len(stock_list)} 只股票, 订阅号: {self.subscription_seq}")
             self.logger.info("数据发布服务已启动，等待接收行情数据...")
 
-            # 每小时记录一次心跳和统计信息
-            last_heartbeat = time.time()
+            # 在每个自然小时的整点记录心跳和统计信息
+            last_hour = datetime.now().hour
             while True:
-                current_time = time.time()
-                if current_time - last_heartbeat >= 3600:  # 每小时
-                    self.logger.info("服务运行正常 - 心跳检查")
+                current_time = datetime.now()
+                current_hour = current_time.hour
+
+                # 当小时数变化时打印统计信息
+                if current_hour != last_hour:
                     self.log_stats()
-                    last_heartbeat = current_time
+                    last_hour = current_hour
                 time.sleep(1)
 
         except KeyboardInterrupt:
