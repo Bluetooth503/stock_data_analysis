@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from psycopg2.extras import execute_batch
 from psycopg2 import pool
 from datetime import timezone
+import threading
 
 class QMTDataSubscriber:
     def __init__(self):
@@ -14,6 +15,12 @@ class QMTDataSubscriber:
         # 初始化ZMQ
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.SUB)
+
+        # 设置ZMQ超时参数
+        self.socket.setsockopt(zmq.RCVTIMEO, 5000)  # 接收超时5秒
+        self.socket.setsockopt(zmq.LINGER, 0)      # 关闭时立即断开
+        self.socket.setsockopt(zmq.RECONNECT_IVL, 1000)  # 重连间隔1秒
+        self.socket.setsockopt(zmq.RECONNECT_IVL_MAX, 5000)  # 最大重连间隔5秒
 
         # 配置客户端加密
         server_public_key = self._load_server_public_key()
@@ -28,6 +35,7 @@ class QMTDataSubscriber:
         port = self.config.get('zmq', 'port')
         self.socket.connect(f"tcp://{ip}:{port}")
         self.socket.subscribe(b"MARKET_DATA")
+        self.socket.subscribe(b"HEARTBEAT")  # 订阅心跳消息
         self.logger.info(f"已连接到发布者IP {ip}，端口 {port}")
 
         # 数据库连接
@@ -48,9 +56,16 @@ class QMTDataSubscriber:
         # 添加统计信息
         self.stats = {
             'total_quotes': 0,
+            'total_heartbeats': 0,
             'start_time': datetime.now(),
-            'last_stats_time': datetime.now()  # 上次统计时间，用于每小时统计
+            'last_stats_time': datetime.now(),  # 上次统计时间，用于每小时统计
+            'last_message_time': time.time()    # 上次接收任何消息的时间
         }
+
+        # 连接监控设置
+        self.connection_timeout = 30  # 连接超时时间（秒）
+        self.connection_monitor_thread = None
+        self.running = True
 
     def _load_server_public_key(self):
         """加载服务器公钥"""
@@ -68,10 +83,13 @@ class QMTDataSubscriber:
         now = datetime.now()
         runtime = now - self.stats['start_time']
         quote_rate = self.stats['total_quotes'] / runtime.total_seconds() if runtime.total_seconds() > 0 else 0
+        heartbeat_rate = self.stats['total_heartbeats'] / runtime.total_seconds() if runtime.total_seconds() > 0 else 0
 
         self.logger.info(
             f"运行统计 - 总行情数: {self.stats['total_quotes']}, "
-            f"平均行情率: {quote_rate:.2f}/秒"
+            f"平均行情率: {quote_rate:.2f}/秒, "
+            f"心跳数: {self.stats['total_heartbeats']}, "
+            f"心跳率: {heartbeat_rate:.2f}/秒"
         )
 
     def save_to_timescaledb(self, quotes):
@@ -163,12 +181,9 @@ class QMTDataSubscriber:
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                           %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                           %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (ts_code, timestamp) DO NOTHING
             """, data)
 
             conn.commit()
-
-            # 数据已成功保存到数据库
 
         except Exception as e:
             self.logger.error(f"保存数据失败: {e}")
@@ -176,50 +191,163 @@ class QMTDataSubscriber:
             if conn:
                 self.db_pool.putconn(conn)
 
+
+    def reconnect(self):
+        """重新连接到ZMQ服务器"""
+        max_attempts = 3  # 最大重试次数
+        retry_delay = 1   # 重试间隔（秒）
+
+        for attempt in range(max_attempts):
+            try:
+                self.logger.info(f"开始第 {attempt + 1} 次重连尝试...")
+
+                # 关闭现有连接
+                self.socket.close()
+                time.sleep(0.1)  # 短暂等待确保socket完全关闭
+
+                # 创建新的socket
+                self.socket = self.context.socket(zmq.SUB)
+
+                # 重新设置超时参数
+                self.socket.setsockopt(zmq.RCVTIMEO, 5000)
+                self.socket.setsockopt(zmq.LINGER, 0)
+                self.socket.setsockopt(zmq.RECONNECT_IVL, 1000)
+                self.socket.setsockopt(zmq.RECONNECT_IVL_MAX, 5000)
+
+                # 重新配置加密
+                server_public_key = self._load_server_public_key()
+                client_public, client_secret = zmq.curve_keypair()
+                self.socket.curve_serverkey = server_public_key
+                self.socket.curve_publickey = client_public
+                self.socket.curve_secretkey = client_secret
+
+                # 重新连接
+                ip = self.config.get('zmq', 'ip')
+                port = self.config.get('zmq', 'port')
+                self.socket.connect(f"tcp://{ip}:{port}")
+                self.socket.subscribe(b"MARKET_DATA")
+                self.socket.subscribe(b"HEARTBEAT")  # 同时订阅心跳消息
+
+                # 测试连接
+                try:
+                    parts = self.socket.recv_multipart(flags=zmq.NOBLOCK)
+                    # 检查接收到的消息格式
+                    if len(parts) >= 1:
+                        self.logger.info(f"重连成功并收到数据: {parts[0]}")
+                        if len(parts) > 2:
+                            self.logger.warning(f"接收到超过2个部分的消息，共{len(parts)}个部分")
+                    else:
+                        self.logger.info("重连成功并收到空消息")
+                    # 更新最后消息接收时间
+                    self.stats['last_message_time'] = time.time()
+                    return True
+                except zmq.error.Again:
+                    self.logger.info("重连成功，等待数据...")
+                    return True
+
+            except Exception as e:
+                self.logger.error(f"第 {attempt + 1} 次重连失败: {e}")
+                if attempt < max_attempts - 1:
+                    time.sleep(retry_delay)
+                else:
+                    self.logger.error("达到最大重试次数，重连失败")
+                    return False
+
+        return False
+
+    def monitor_connection(self):
+        """监控连接状态的线程函数"""
+        self.logger.info("启动连接监控线程")
+
+        while self.running:
+            current_time = time.time()
+            last_message_time = self.stats['last_message_time']
+            time_since_last_message = current_time - last_message_time
+
+            # 如果超过设定的超时时间没有收到任何消息，尝试重连
+            if time_since_last_message > self.connection_timeout:
+                self.logger.warning(f"已有 {time_since_last_message:.1f} 秒未收到任何消息，尝试重新连接...")
+                success = self.reconnect()
+                if success:
+                    self.logger.info("重连成功")
+                else:
+                    self.logger.error("重连失败，将在下一个检查周期再次尝试")
+
+            # 每5秒检查一次连接状态
+            time.sleep(5)
+
     def run(self):
         self.logger.info(f"启动市场数据接收服务... ZMQ: {self.config.get('zmq', 'ip')}:{self.config.get('zmq', 'port')}")
+
+        # 启动连接监控线程
+        self.connection_monitor_thread = threading.Thread(target=self.monitor_connection, daemon=True)
+        self.connection_monitor_thread.start()
+        self.logger.info("连接监控线程已启动")
 
         try:
             while True:
                 try:
                     # 非阻塞接收数据
-                    [_, message] = self.socket.recv_multipart(flags=zmq.NOBLOCK)
+                    parts = self.socket.recv_multipart(flags=zmq.NOBLOCK)
+
+                    # 更新最后消息接收时间
+                    self.stats['last_message_time'] = time.time()
+
+                    # 检查接收到的消息格式
+                    if len(parts) < 2:
+                        self.logger.warning(f"接收到格式不正确的消息: {parts}")
+                        continue
+
+                    # 提取主题和消息内容
+                    topic = parts[0]
+                    message = parts[1]
+
+                    # 如果收到超过2个部分的消息，记录日志但继续处理
+                    if len(parts) > 2:
+                        self.logger.warning(f"接收到超过2个部分的消息，共{len(parts)}个部分，将只处理前两个部分")
 
                     # 解压缩和反序列化
                     decompressed_data = decompress_data(message)
                     batch = StockQuoteBatch()
                     batch.ParseFromString(decompressed_data)
 
-                    # 如果有数据就处理
-                    if batch.quotes:
+                    # 根据消息类型处理
+                    if topic == b"MARKET_DATA" and batch.quotes:
                         # 异步保存数据
                         self.executor.submit(self.save_to_timescaledb, batch.quotes)
 
                         # 更新统计信息
                         self.stats['total_quotes'] += len(batch.quotes)
 
-                        # 每自然小时（整点）记录一次统计信息
-                        now = datetime.now()
-                        current_hour = now.hour
-                        last_hour = self.stats['last_stats_time'].hour
+                    elif topic == b"HEARTBEAT":
+                        # 处理心跳消息
+                        self.stats['total_heartbeats'] += 1
 
-                        # 如果小时发生了变化，或者是第一次运行，则打印统计信息
-                        if current_hour != last_hour:
-                            self.log_stats()
-                            self.stats['last_stats_time'] = now
+                    # 每自然小时（整点）记录一次统计信息
+                    now = datetime.now()
+                    current_hour = now.hour
+                    last_hour = self.stats['last_stats_time'].hour
+
+                    # 如果小时发生了变化，或者是第一次运行，则打印统计信息
+                    if current_hour != last_hour:
+                        self.log_stats()
+                        self.stats['last_stats_time'] = now
 
                 except zmq.error.Again:
-                    # 没有数据时短暂等待以避免CPU占用过高
                     time.sleep(0.001)
                     continue
                 except Exception as e:
                     self.logger.error(f"处理数据失败: {e}")
-                    # 发生错误时短暂等待以避免CPU占用过高
                     time.sleep(0.001)
 
         except KeyboardInterrupt:
             self.logger.info("\n检测到退出信号，正在清理...")
         finally:
+            # 停止连接监控线程
+            self.running = False
+            if self.connection_monitor_thread and self.connection_monitor_thread.is_alive():
+                self.connection_monitor_thread.join(timeout=1.0)
+
             self.socket.close()
             self.context.term()
             self.logger.info("已清理所有资源")

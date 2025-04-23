@@ -332,6 +332,12 @@ CREATE INDEX "ths_index_members_ts_name_idx" ON "public"."ths_index_members" USI
 
 
 
+-- IMMUTABLE函数,timestamptz转日期
+CREATE OR REPLACE FUNCTION immutable_date(timestamptz) 
+RETURNS date AS $$
+  SELECT ($1)::date;
+$$ LANGUAGE SQL IMMUTABLE;
+
 -- 创建a_stock_level1_data超表
 CREATE TABLE a_stock_level1_data (
     ts_code VARCHAR(16) NOT NULL,
@@ -395,12 +401,10 @@ SELECT create_hypertable('a_stock_level1_data', 'timestamp');
 CREATE INDEX idx_a_stock_level1_data_ts_code      ON a_stock_level1_data (ts_code);
 CREATE INDEX idx_a_stock_level1_data_timestamp    ON a_stock_level1_data (timestamp DESC);
 CREATE INDEX idx_a_stock_level1_data_ts_code_time ON a_stock_level1_data (ts_code, timestamp DESC);
+CREATE INDEX idx_a_stock_level1_data_date ON a_stock_level1_data(immutable_date("timestamp") DESC);
 
 -- 为了优化查询性能，可以考虑添加压缩
-ALTER TABLE a_stock_level1_data SET (
-    timescaledb.compress,
-    timescaledb.compress_segmentby = 'ts_code'
-);
+ALTER TABLE a_stock_level1_data SET (timescaledb.compress,timescaledb.compress_segmentby = 'ts_code');
 
 -- 设置压缩策略（比如7天后的数据自动压缩）
 SELECT add_compression_policy('a_stock_level1_data', INTERVAL '7 days');

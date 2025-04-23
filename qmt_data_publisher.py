@@ -25,26 +25,34 @@ class QMTDataPublisher:
         port = self.config.get('zmq', 'port')
         self.socket.bind(f"tcp://*:{port}")
         self.logger.info(f"ZMQ publisher已初始化并绑定到端口 {port}")
-        
+
         # 订阅号
         self.subscription_seq = None
 
         # 添加统计信息
         self.stats = {
             'total_messages': 0,
+            'total_heartbeats': 0,
             'last_message_time': None,
+            'last_heartbeat_time': None,
             'start_time': datetime.now()
         }
+
+        # 心跳设置
+        self.heartbeat_interval = 10  # 心跳间隔（秒）
 
     def log_stats(self):
         """记录运行统计信息"""
         now = datetime.now()
         runtime = now - self.stats['start_time']
         msg_rate = self.stats['total_messages'] / runtime.total_seconds() if runtime.total_seconds() > 0 else 0
+        heartbeat_rate = self.stats['total_heartbeats'] / runtime.total_seconds() if runtime.total_seconds() > 0 else 0
 
         self.logger.info(
             f"运行统计 - 总消息数: {self.stats['total_messages']}, "
             f"消息率: {msg_rate:.2f}/秒, "
+            f"心跳数: {self.stats['total_heartbeats']}, "
+            f"心跳率: {heartbeat_rate:.2f}/秒, "
             f"运行时长: {runtime}"
         )
 
@@ -154,6 +162,30 @@ class QMTDataPublisher:
             self.logger.error(f"取消订阅失败: {str(e)}")
             self.logger.exception(e)
 
+    def send_heartbeat(self):
+        """发送心跳消息"""
+        try:
+            # 创建心跳消息
+            batch = StockQuoteBatch()
+            batch.batch_timestamp = int(time.time() * 1000)
+            batch.publisher_id = "QMT_PUBLISHER_001"
+            # 心跳消息不包含任何行情数据，quotes列表为空
+
+            # 序列化并压缩
+            serialized_data = batch.SerializeToString()
+            compressed_data = compress_data(serialized_data)
+
+            # 发送心跳消息，使用HEARTBEAT主题
+            self.socket.send_multipart([b"HEARTBEAT", compressed_data])
+
+            # 更新统计信息
+            self.stats['total_heartbeats'] += 1
+            self.stats['last_heartbeat_time'] = datetime.now()
+
+        except Exception as e:
+            self.logger.error(f"发送心跳消息失败: {str(e)}")
+            self.logger.exception(e)
+
     def run(self):
         try:
             # 订阅股票行情
@@ -165,15 +197,24 @@ class QMTDataPublisher:
 
             # 在每个自然小时的整点记录心跳和统计信息
             last_hour = datetime.now().hour
+            last_heartbeat_time = time.time()
+
             while True:
                 current_time = datetime.now()
                 current_hour = current_time.hour
+                current_timestamp = time.time()
 
                 # 当小时数变化时打印统计信息
                 if current_hour != last_hour:
                     self.log_stats()
                     last_hour = current_hour
-                time.sleep(1)
+
+                # 检查是否需要发送心跳
+                if current_timestamp - last_heartbeat_time >= self.heartbeat_interval:
+                    self.send_heartbeat()
+                    last_heartbeat_time = current_timestamp
+
+                time.sleep(0.5)  # 减少CPU使用率，同时保持足够的响应性
 
         except KeyboardInterrupt:
             self.logger.info("\n检测到退出信号，正在清理...")
