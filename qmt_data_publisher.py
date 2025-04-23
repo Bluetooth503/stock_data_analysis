@@ -35,26 +35,57 @@ class QMTDataPublisher:
             'total_heartbeats': 0,
             'last_message_time': None,
             'last_heartbeat_time': None,
-            'start_time': datetime.now()
+            'start_time': datetime.now(),
+            'last_stats_time': datetime.now(),  # 添加最后统计时间
+            'period_messages': 0,    # 当前10分钟周期的消息数
+            'period_heartbeats': 0   # 当前10分钟周期的心跳数
         }
 
         # 心跳设置
         self.heartbeat_interval = 10  # 心跳间隔（秒）
 
     def log_stats(self):
-        """记录运行统计信息"""
+        """按自然10分钟记录运行统计信息"""
         now = datetime.now()
-        runtime = now - self.stats['start_time']
-        msg_rate = self.stats['total_messages'] / runtime.total_seconds() if runtime.total_seconds() > 0 else 0
-        heartbeat_rate = self.stats['total_heartbeats'] / runtime.total_seconds() if runtime.total_seconds() > 0 else 0
-
-        self.logger.info(
-            f"运行统计 - 总消息数: {self.stats['total_messages']}, "
-            f"消息率: {msg_rate:.2f}/秒, "
-            f"心跳数: {self.stats['total_heartbeats']}, "
-            f"心跳率: {heartbeat_rate:.2f}/秒, "
-            f"运行时长: {runtime}"
+        
+        # 计算当前10分钟周期的开始时间
+        current_period = now.replace(
+            minute=(now.minute // 10) * 10,  # 向下取整到最近的10分钟
+            second=0,
+            microsecond=0
         )
+        
+        # 计算上一个统计周期的开始时间
+        last_period = self.stats['last_stats_time'].replace(
+            minute=(self.stats['last_stats_time'].minute // 10) * 10,
+            second=0,
+            microsecond=0
+        )
+        
+        # 如果还在同一个10分钟周期内，不打印日志
+        if current_period == last_period:
+            return
+        
+        # 计算这个10分钟周期内的时长（秒）
+        period_seconds = (now - self.stats['last_stats_time']).total_seconds()
+        
+        # 计算该周期内的平均速率
+        msg_rate = self.stats['period_messages'] / period_seconds if period_seconds > 0 else 0
+        heartbeat_rate = self.stats['period_heartbeats'] / period_seconds if period_seconds > 0 else 0
+        
+        # 打印统计信息
+        self.logger.info(
+            f"10分钟统计 ({last_period.strftime('%H:%M')} - {now.strftime('%H:%M')}) - "
+            f"消息数: {self.stats['period_messages']}, "
+            f"平均消息率: {msg_rate:.2f}/秒, "
+            f"心跳数: {self.stats['period_heartbeats']}, "
+            f"心跳率: {heartbeat_rate:.2f}/秒"
+        )
+        
+        # 重置周期计数器
+        self.stats['period_messages'] = 0
+        self.stats['period_heartbeats'] = 0
+        self.stats['last_stats_time'] = now
 
     def on_tick_data(self, datas):
         try:
@@ -136,16 +167,37 @@ class QMTDataPublisher:
 
                 batch.quotes.append(quote)
 
-            # 序列化并压缩
+            # 序列化并压缩前先验证数据
             serialized_data = batch.SerializeToString()
-            compressed_data = compress_data(serialized_data)
+            if not serialized_data:
+                self.logger.warning("序列化数据为空，跳过发送")
+                return
 
-            # 发送数据
-            self.socket.send_multipart([b"MARKET_DATA", compressed_data])
+            compressed_data = compress_data(serialized_data)
+            if not compressed_data:
+                self.logger.warning("压缩数据为空，跳过发送")
+                return
+
+            # 发送前验证数据完整性
+            try:
+                # 测试解压缩是否成功
+                test_decompress = decompress_data(compressed_data)
+                test_batch = StockQuoteBatch()
+                test_batch.ParseFromString(test_decompress)
+            except Exception as e:
+                self.logger.error(f"数据验证失败，跳过发送: {e}")
+                return
+
+            # 确保只发送两个部分的消息
+            self.socket.send_multipart([b"MARKET_DATA", compressed_data], zmq.NOBLOCK)
 
             # 更新统计信息
             self.stats['total_messages'] += 1
+            self.stats['period_messages'] += 1  # 更新周期消息计数
             self.stats['last_message_time'] = datetime.now()
+            
+            # 检查是否需要打印统计信息
+            self.log_stats()
 
         except Exception as e:
             self.logger.error(f"处理tick数据失败: {str(e)}")
@@ -175,13 +227,19 @@ class QMTDataPublisher:
             serialized_data = batch.SerializeToString()
             compressed_data = compress_data(serialized_data)
 
-            # 发送心跳消息，使用HEARTBEAT主题
-            self.socket.send_multipart([b"HEARTBEAT", compressed_data])
+            # 发送心跳消息，使用HEARTBEAT主题，添加NOBLOCK参数
+            self.socket.send_multipart([b"HEARTBEAT", compressed_data], zmq.NOBLOCK)
 
             # 更新统计信息
             self.stats['total_heartbeats'] += 1
+            self.stats['period_heartbeats'] += 1  # 更新周期心跳计数
             self.stats['last_heartbeat_time'] = datetime.now()
+            
+            # 检查是否需要打印统计信息
+            self.log_stats()
 
+        except zmq.Again:
+            self.logger.warning("发送心跳消息时缓冲区已满，跳过本次心跳")
         except Exception as e:
             self.logger.error(f"发送心跳消息失败: {str(e)}")
             self.logger.exception(e)

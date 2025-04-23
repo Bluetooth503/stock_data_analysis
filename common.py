@@ -25,6 +25,7 @@ from wxpusher import WxPusher
 import requests
 from io import StringIO
 import csv
+import inspect
 
 
 def convert_to_baostock_code(ts_code: str) -> str:
@@ -54,11 +55,6 @@ def get_pg_connection_string(config):
     pg_config = config['postgresql']
     return f"postgresql://{pg_config['user']}:{pg_config['password']}@{pg_config['host']}:{pg_config['port']}/{pg_config['database']}"
 
-def get_mysql_connection_string(config):
-    """获取MySQL连接字符串"""
-    mysql_config = config['mysql']
-    return f"mysql+pymysql://{mysql_config['user']}:{mysql_config['password']}@{mysql_config['host']}:{mysql_config['port']}/{mysql_config['database']}"
-
 def get_30m_kline_data(fq_code, ts_code, start_date=None, end_date=None):
     """从PostgreSQL数据库获取股票数据，返回DataFrame"""
     config = load_config()
@@ -84,58 +80,42 @@ def get_30m_kline_data(fq_code, ts_code, start_date=None, end_date=None):
     df = df.dropna()
     return df
 
-def setup_logger(prefix: str = None) -> logger:
-    """
-    配置loguru日志处理
-    Args:
-        prefix: 日志文件前缀，默认使用调用者的文件名
-    Returns:
-        logger: 配置好的loguru日志记录器
-    """
+def setup_logger(prefix=None):
+    """设置日志记录器"""
     if prefix is None:
-        # 获取调用者的文件名（不含扩展名）作为前缀
-        import inspect
-        caller_frame = inspect.stack()[1]
-        caller_file = os.path.basename(caller_frame.filename)
+        # 获取调用者的文件名作为前缀
+        caller_file = os.path.basename(inspect.stack()[1].filename)
         prefix = os.path.splitext(caller_file)[0]
-    
+
     # 获取调用者脚本所在目录
     caller_dir = os.path.dirname(os.path.abspath(inspect.stack()[1].filename))
     log_file = os.path.join(caller_dir, f'{prefix}.log')
-    
+
     # 移除默认的sink
     logger.remove()
-    
+
     # 添加控制台输出
     logger.add(
         sink=sys.stderr,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-        level="INFO"
+        level="INFO"  # 使用INFO级别，只显示必要信息
     )
-    
+
     # 添加文件输出
     logger.add(
         sink=log_file,
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
-        level="INFO",
-        rotation="10 MB",  # 当文件达到10MB时轮转
-        retention="1 week",  # 保留1周的日志
-        encoding="utf-8",
-        enqueue=True  # 线程安全
-    )  
+        level="INFO",  # 使用INFO级别，只记录必要信息
+        rotation="10 MB",
+        retention="30 days",
+        encoding="utf-8",  # 添加UTF-8编码支持，解决中文乱码问题
+        enqueue=True      # 启用异步写入，提高性能
+    )
     return logger
 
 
 def upsert_data(df: pd.DataFrame, table_name: str, temp_table: str, insert_sql: str, engine) -> None:
-    """
-    使用临时表进行批量更新
-    Args:
-        df: 要导入的数据框
-        table_name: 目标表名
-        temp_table: 临时表名
-        insert_sql: 插入SQL语句
-        engine: SQLAlchemy引擎
-    """
+    """使用临时表进行批量更新"""
     with engine.begin() as conn:
         if engine.url.drivername.startswith('postgresql'):
             # 对于PostgreSQL，使用COPY命令进行快速导入
@@ -169,18 +149,7 @@ def upsert_data(df: pd.DataFrame, table_name: str, temp_table: str, insert_sql: 
 
 
 def save_to_database(df: pd.DataFrame, table_name: str, conflict_columns: list, data_type: str = None, engine = None, update_columns: list = None) -> bool:
-    """
-    将数据保存到PostgreSQL数据库，使用COPY命令进行快速导入
-    Args:
-        df: 要保存的数据框
-        table_name: 目标表名
-        conflict_columns: 用于处理冲突的列名列表
-        data_type: 数据类型描述（用于日志），默认为None
-        engine: SQLAlchemy引擎，如果为None则自动创建
-        update_columns: 发生冲突时需要更新的列名列表，默认为None（执行DO NOTHING）
-    Returns:
-        bool: 是否保存成功
-    """
+    """使用COPY命令导入数据"""
     try:
         # 参数处理
         if data_type is None:
@@ -243,11 +212,7 @@ def convert_date_format(date_str: str) -> str:
     return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
 
 def format_time(time_str):
-    """
-    格式化时间字符串，将baostock返回的时间格式转换为 HH:MM:00
-    输入格式: YYYYMMDDHHMMSSMMM (如: 20250124100000000)
-    输出格式: HH:MM:00
-    """
+    """格式化时间字符串"""
     # 提取小时和分钟
     hour = time_str[8:10]
     minute = time_str[10:12]
@@ -431,13 +396,7 @@ def send_notification_pushplus(subject, content):
         return False
 
 def send_notification_wecom(subject, content):
-    """使用企业微信发送通知
-    Args:
-        subject: 通知标题
-        content: 通知内容
-    Returns:
-        bool: 是否发送成功
-    """
+    """使用企业微信发送通知"""
     try:
         # 从配置文件获取webhook地址
         config = load_config()

@@ -58,7 +58,7 @@ class QMTDataSubscriber:
             'total_quotes': 0,
             'total_heartbeats': 0,
             'start_time': datetime.now(),
-            'last_stats_time': datetime.now(),  # 上次统计时间，用于每小时统计
+            'last_stats_time': datetime.now(),  # 上次统计时间，用于每10分钟统计
             'last_message_time': time.time()    # 上次接收任何消息的时间
         }
 
@@ -81,16 +81,23 @@ class QMTDataSubscriber:
     def log_stats(self):
         """记录运行统计信息"""
         now = datetime.now()
-        runtime = now - self.stats['start_time']
-        quote_rate = self.stats['total_quotes'] / runtime.total_seconds() if runtime.total_seconds() > 0 else 0
-        heartbeat_rate = self.stats['total_heartbeats'] / runtime.total_seconds() if runtime.total_seconds() > 0 else 0
+        # 计算自上次统计以来的时间间隔
+        time_since_last_stats = (now - self.stats['last_stats_time']).total_seconds()
+        # 计算这个10分钟周期内的平均速率
+        quote_rate = self.stats['total_quotes'] / time_since_last_stats if time_since_last_stats > 0 else 0
+        heartbeat_rate = self.stats['total_heartbeats'] / time_since_last_stats if time_since_last_stats > 0 else 0
 
         self.logger.info(
-            f"运行统计 - 总行情数: {self.stats['total_quotes']}, "
+            f"10分钟统计 - 行情数: {self.stats['total_quotes']}, "
             f"平均行情率: {quote_rate:.2f}/秒, "
             f"心跳数: {self.stats['total_heartbeats']}, "
             f"心跳率: {heartbeat_rate:.2f}/秒"
         )
+
+        # 重置计数器
+        self.stats['total_quotes'] = 0
+        self.stats['total_heartbeats'] = 0
+        self.stats['last_stats_time'] = now
 
     def save_to_timescaledb(self, quotes):
         """将行情数据保存到TimescaleDB数据库"""
@@ -304,7 +311,21 @@ class QMTDataSubscriber:
 
                     # 如果收到超过2个部分的消息，记录日志但继续处理
                     if len(parts) > 2:
-                        self.logger.warning(f"接收到超过2个部分的消息，共{len(parts)}个部分，将只处理前两个部分")
+                        # 打印基本信息
+                        self.logger.warning(f"接收到超过2个部分的消息，共{len(parts)}个部分")
+
+                        # 打印每个部分的信息
+                        for i, part in enumerate(parts):
+                            try:
+                                # 尝试将bytes解码为字符串
+                                text = part.decode('utf-8', errors='replace')
+                                self.logger.warning(f"第{i+1}部分内容(文本): {text}")
+                            except:
+                                # 如果解码失败，打印十六进制
+                                self.logger.warning(f"第{i+1}部分内容(hex): {part.hex()[:100]}...")
+
+                            # 打印长度信息
+                            self.logger.warning(f"第{i+1}部分大小: {len(part)} bytes")
 
                     # 解压缩和反序列化
                     decompressed_data = decompress_data(message)
@@ -323,15 +344,13 @@ class QMTDataSubscriber:
                         # 处理心跳消息
                         self.stats['total_heartbeats'] += 1
 
-                    # 每自然小时（整点）记录一次统计信息
+                    # 每自然10分钟记录一次统计信息
                     now = datetime.now()
-                    current_hour = now.hour
-                    last_hour = self.stats['last_stats_time'].hour
+                    current_minute = now.minute
 
-                    # 如果小时发生了变化，或者是第一次运行，则打印统计信息
-                    if current_hour != last_hour:
+                    # 检查是否到达自然10分钟的边界（00, 10, 20, 30, 40, 50分）
+                    if current_minute % 10 == 0 and now.minute != self.stats['last_stats_time'].minute:
                         self.log_stats()
-                        self.stats['last_stats_time'] = now
 
                 except zmq.error.Again:
                     time.sleep(0.001)
