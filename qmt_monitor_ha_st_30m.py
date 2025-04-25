@@ -285,7 +285,7 @@ def check_positions():
         return
 
     # 获取持仓股票的最新数据
-    position_codes = [pos.stock_code for pos in positions]
+    position_codes = [pos.stock_code for pos in positions if pos.volume > 0]
     df = xtdata.get_market_data_ex([], position_codes, period='30m', start_time='20240101')
 
     # 检查每个持仓股票的状态

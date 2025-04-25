@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 from common import *
+from sqlalchemy import text
 import schedule
 import tushare as ts
 import traceback
 
 # ================================= 配置 =================================
-run_time = "16:30"
+run_time = "17:00"
 n_days = 5
 table_name = "a_stock_trade_dates"
 
@@ -53,10 +54,24 @@ def update_trade_dates(n_days=30, table_name="a_stock_trade_dates"):
         # 获取数据库连接
         engine = create_engine(get_pg_connection_string(config))
 
-        # 保存到数据库（覆盖模式）
-        df.to_sql(table_name, engine, if_exists='replace', index=False)
+        # 保存到数据库（先清空再插入，避免删除表结构）
+        with engine.begin() as conn:
+            # 清空表中的数据
+            conn.execute(text(f"TRUNCATE TABLE {table_name}"))
+            # 插入新数据
+            df.to_sql(table_name, conn, if_exists='append', index=False)
 
-        logger.info(f"成功覆盖保存{len(formatted_dates)}个交易日期到数据库表 {table_name}")
+        logger.info(f"成功更新{len(formatted_dates)}个交易日期到数据库表 {table_name}")
+
+        # 刷新物化视图
+        try:
+            with engine.connect() as connection:
+                connection.execute(text("SELECT refresh_stock_5days_avg_volume_trans()"))
+            logger.info("成功刷新物化视图 refresh_stock_5days_avg_volume_trans")
+        except Exception as e:
+            error_msg = f"刷新物化视图过程中发生错误: {str(e)}"
+            logger.error(error_msg)
+            send_notification_wecom("刷新物化视图错误", error_msg)
 
     except Exception as e:
         error_msg = f"更新交易日期过程中发生错误: {str(e)}\n{traceback.format_exc()}"

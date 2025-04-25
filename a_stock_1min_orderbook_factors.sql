@@ -1,14 +1,14 @@
 -- 步骤1: 暂停持续聚合策略(如果有)
-SELECT remove_continuous_aggregate_policy('a_stock_5min_orderbook_factors');
+SELECT remove_continuous_aggregate_policy('a_stock_1min_orderbook_factors');
 
 -- 步骤2: 删除持续聚合视图
-DROP MATERIALIZED VIEW a_stock_5min_orderbook_factors;
+DROP MATERIALIZED VIEW a_stock_1min_orderbook_factors;
 
 -- 步骤3: 创建持续聚合视图
-CREATE MATERIALIZED VIEW a_stock_5min_orderbook_factors
+CREATE MATERIALIZED VIEW a_stock_1min_orderbook_factors
 WITH (timescaledb.continuous) AS
 SELECT
-    time_bucket('5 minutes', "timestamp") AS trade_time,
+    time_bucket('1 minutes', "timestamp") AS trade_time,
     ts_code,
 
     -- OHLCV 基础指标 
@@ -84,10 +84,10 @@ FROM public.a_stock_level1_data
 GROUP BY trade_time, ts_code;
 
 -- 步骤4: 重新添加持续聚合策略
-SELECT add_continuous_aggregate_policy('a_stock_5min_orderbook_factors',
-    start_offset => INTERVAL '10 minutes' + INTERVAL '10 seconds',
+SELECT add_continuous_aggregate_policy('a_stock_1min_orderbook_factors',
+    start_offset => INTERVAL '2 minutes' + INTERVAL '10 seconds',
     end_offset   => INTERVAL '10 seconds',
-    schedule_interval => INTERVAL '1 minutes');
+    schedule_interval => INTERVAL '30 seconds');
 
 -- 手动刷新持续聚合，立即生成结果
-CALL refresh_continuous_aggregate('a_stock_5min_orderbook_factors', NULL, NULL);
+CALL refresh_continuous_aggregate('a_stock_1min_orderbook_factors', NULL, NULL);
