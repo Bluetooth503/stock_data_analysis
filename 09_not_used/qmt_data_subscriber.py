@@ -1,4 +1,4 @@
-from qmt_common import *
+from common_qmt import *
 import zmq
 from proto.qmt_level1_data_pb2 import StockQuoteBatch
 from concurrent.futures import ThreadPoolExecutor

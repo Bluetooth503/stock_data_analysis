@@ -1,6 +1,6 @@
 
 # -*- coding: utf-8 -*-
-from qmt_common import *
+from common_qmt import *
 from proto.qmt_level1_data_pb2 import StockQuote, StockQuoteBatch
 import threading
 from xtquant import xtdata

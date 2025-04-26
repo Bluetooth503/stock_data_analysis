@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from qmt_common import *
+from common_qmt import *
 from multiprocessing import Pool
 from xtquant import xtdata
 from xtquant.xttrader import XtQuantTrader

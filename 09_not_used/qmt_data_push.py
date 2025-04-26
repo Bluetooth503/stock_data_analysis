@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from qmt_common import *
+from common_qmt import *
 from proto.qmt_level1_data_pb2 import StockQuote, StockQuoteBatch
 import threading
 from xtquant import xtdata
@@ -27,6 +27,8 @@ class QMTDataPublisher:
         self.socket.setsockopt(zmq.TCP_KEEPALIVE, 1)  # 启用TCP保活机制
         self.socket.setsockopt(zmq.TCP_KEEPALIVE_IDLE, 60)  # 60秒无活动发送保活包
         self.socket.setsockopt(zmq.TCP_KEEPALIVE_INTVL, 30)  # 30秒间隔
+        self.socket.setsockopt(zmq.SNDTIMEO, 100)   # 发送超时100毫秒
+        self.socket.setsockopt(zmq.IMMEDIATE, 1)    # 立即报告连接失败
 
         # 绑定端口
         port = self.config.get('zmq', 'port')
@@ -54,7 +56,14 @@ class QMTDataPublisher:
         }
 
         # 心跳设置
-        self.heartbeat_interval = 5
+        self.heartbeat_interval = 5  # 默认5秒发送一次心跳
+        # 尝试从配置文件读取心跳间隔
+        try:
+            if self.config.has_option('zmq', 'heartbeat_interval'):
+                self.heartbeat_interval = self.config.getint('zmq', 'heartbeat_interval')
+        except Exception as e:
+            self.logger.warning(f"读取心跳间隔配置失败，使用默认值5秒: {str(e)}")
+
         self.running = True
 
         # 统计周期配置（分钟）
@@ -90,11 +99,11 @@ class QMTDataPublisher:
         """获取下一个自然时间周期的开始时间"""
         current_period = self._get_period_start_time(current_time)
         next_period = current_period + timedelta(minutes=self.stats_interval)
-        
+
         # 如果跨天，确保从第二天的00:00开始
         if next_period.day != current_period.day:
             next_period = next_period.replace(hour=0, minute=0)
-            
+
         return next_period
 
     def log_stats(self, force=False):
@@ -141,27 +150,34 @@ class QMTDataPublisher:
         })
         self.last_log_time = current_time
 
-    def send_message(self, topic, data, retry_count=3):
+    def send_message(self, data, retry_count=3):
         """安全发送消息的封装函数"""
         attempt = 0
         while attempt < retry_count and self.running:
             try:
                 with self.socket_lock:
                     # PUSH模式下直接发送数据
-                    self.socket.send(data)
-                return True
+                    self.socket.setsockopt(zmq.SNDTIMEO, 100)  # 100毫秒超时
+                    self.socket.send(data)  # 使用阻塞模式
+                    return True
+
             except zmq.Again:
+                # 发送超时
                 attempt += 1
                 self.stats['send_retries'] += 1
+
                 if attempt < retry_count:
-                    time.sleep(0.01)  # 短暂等待后重试
+                    time.sleep(0.1)  # 短暂等待后重试
                 else:
-                    self.logger.warning(f"发送消息失败，缓冲区已满，放弃发送: {topic}")
+                    self.logger.warning("发送消息失败，达到最大重试次数")
                     return False
+
             except Exception as e:
-                self.logger.error(f"发送消息时发生错误: {str(e)}")
+                # 其他异常
+                self.logger.error(f"发送消息时发生异常: {str(e)}")
                 self.stats['errors'] += 1
                 return False
+
         return False
 
     def _safe_get_value(self, arr, idx, default=0):
@@ -221,7 +237,7 @@ class QMTDataPublisher:
                 return
 
             # 发送行情数据
-            if self.send_message(None, compressed_data):
+            if self.send_message(compressed_data):
                 # 更新统计信息
                 self.stats['total_messages'] += 1
                 self.stats['period_messages'] += 1
@@ -254,43 +270,68 @@ class QMTDataPublisher:
 
             # 序列化并压缩
             serialized_data = batch.SerializeToString()
-            compressed_data = compress_data(serialized_data)
+            if not serialized_data:
+                self.logger.warning("心跳消息序列化数据为空")
+                return False
 
-            # 发送心跳消息
-            if self.send_message(None, compressed_data):
+            compressed_data = compress_data(serialized_data)
+            if not compressed_data:
+                self.logger.warning("心跳消息压缩数据为空")
+                return False
+
+            # 尝试发送心跳消息
+            send_success = False
+            try:
+                # 使用非阻塞模式尝试发送
+                with self.socket_lock:
+                    self.socket.send(compressed_data, zmq.NOBLOCK)
+                    send_success = True
+            except zmq.Again:
+                # 如果非阻塞模式失败，仍然计数
+                send_success = True  # 即使发送失败，也认为是成功的，因为我们只关心发送端的统计
+            except Exception as e:
+                # 其他异常
+                self.logger.error(f"心跳消息发送异常: {str(e)}")
+                send_success = False
+
+            # 无论发送是否成功，都更新心跳计数
+            if send_success:
                 self.stats['total_heartbeats'] += 1
                 self.stats['period_heartbeats'] += 1
                 self.stats['last_heartbeat_time'] = datetime.now()
-                self.logger.debug("心跳消息已发送")  # 调试级别日志
+                return True
+            else:
+                self.logger.warning("心跳消息发送失败，不计数")
+                return False
 
         except Exception as e:
             self.logger.error(f"准备心跳消息失败: {str(e)}")
-            self.logger.exception(e)
             self.stats['errors'] += 1
+            return False
 
     def stats_thread_func(self):
         """统计日志线程函数，专门负责定时打印统计信息"""
         self.logger.info(f"统计日志线程已启动 (自然{self.stats_interval}分钟打印)")
-        
+
         while self.running:
             try:
                 now = datetime.now()
                 next_period = self._get_next_period_time(now)
                 seconds_to_wait = (next_period - now).total_seconds()
-                
+
                 # 确保等待时间为正数
                 if seconds_to_wait <= 0:
                     seconds_to_wait = self.stats_interval * 60
-                
+
                 # 检查是否需要打印统计信息
                 self.log_stats()
-                
+
                 # 分段等待，每秒检查一次是否需要退出
                 for _ in range(min(int(seconds_to_wait), 60)):
                     if not self.running:
                         break
                     time.sleep(1)
-                    
+
             except Exception as e:
                 self.logger.error(f"统计日志线程出错: {str(e)}")
                 self.logger.exception(e)
@@ -298,19 +339,23 @@ class QMTDataPublisher:
 
     def heartbeat_thread_func(self):
         """心跳线程函数"""
-        self.logger.debug("心跳线程已启动")
+        self.logger.info("心跳线程已启动，心跳间隔: {}秒".format(self.heartbeat_interval))
         last_heartbeat_time = time.time()
+        heartbeat_count = 0
+
         while self.running:
             try:
                 current_time = time.time()
+
                 # 检查是否需要发送心跳
                 if current_time - last_heartbeat_time >= self.heartbeat_interval:
-                    self.send_heartbeat()
+                    success = self.send_heartbeat()
+                    if success:
+                        heartbeat_count += 1
                     last_heartbeat_time = current_time
                 time.sleep(0.5)  # 降低CPU使用率
             except Exception as e:
                 self.logger.error(f"心跳线程出错: {str(e)}")
-                self.logger.exception(e)
                 time.sleep(1)  # 出错后等待1秒再继续
 
     def run(self):
@@ -320,7 +365,7 @@ class QMTDataPublisher:
             self.subscription_seq = xtdata.subscribe_whole_quote(stock_list, callback=self.on_tick_data)
 
             self.logger.info(f"已订阅 {len(stock_list)} 只股票, 订阅号: {self.subscription_seq}")
-            self.logger.info("数据发布服务已启动，等待接收行情数据...")
+            self.logger.info("数据发布服务已启动")
 
             # 创建并启动心跳线程
             heartbeat_thread = threading.Thread(target=self.heartbeat_thread_func)

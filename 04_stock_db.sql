@@ -362,16 +362,6 @@ CREATE TABLE a_stock_level1_data (
     bid_volume4 BIGINT,
     bid_price5 DOUBLE PRECISION,
     bid_volume5 BIGINT,
-    bid_price6 DOUBLE PRECISION,
-    bid_volume6 BIGINT,
-    bid_price7 DOUBLE PRECISION,
-    bid_volume7 BIGINT,
-    bid_price8 DOUBLE PRECISION,
-    bid_volume8 BIGINT,
-    bid_price9 DOUBLE PRECISION,
-    bid_volume9 BIGINT,
-    bid_price10 DOUBLE PRECISION,
-    bid_volume10 BIGINT,
     ask_price1 DOUBLE PRECISION,
     ask_volume1 BIGINT,
     ask_price2 DOUBLE PRECISION,
@@ -382,31 +372,15 @@ CREATE TABLE a_stock_level1_data (
     ask_volume4 BIGINT,
     ask_price5 DOUBLE PRECISION,
     ask_volume5 BIGINT,
-    ask_price6 DOUBLE PRECISION,
-    ask_volume6 BIGINT,
-    ask_price7 DOUBLE PRECISION,
-    ask_volume7 BIGINT,
-    ask_price8 DOUBLE PRECISION,
-    ask_volume8 BIGINT,
-    ask_price9 DOUBLE PRECISION,
-    ask_volume9 BIGINT,
-    ask_price10 DOUBLE PRECISION,
-    ask_volume10 BIGINT
+    etl_time TIMESTAMPTZ NOT NULL
 );
 
--- 将表转换为超表
 SELECT create_hypertable('a_stock_level1_data', 'timestamp');
-
--- 创建索引
 CREATE INDEX idx_a_stock_level1_data_ts_code      ON a_stock_level1_data (ts_code);
 CREATE INDEX idx_a_stock_level1_data_timestamp    ON a_stock_level1_data (timestamp DESC);
 CREATE INDEX idx_a_stock_level1_data_ts_code_time ON a_stock_level1_data (ts_code, timestamp DESC);
 CREATE INDEX idx_a_stock_level1_data_date ON a_stock_level1_data(immutable_date("timestamp") DESC);
-
--- 为了优化查询性能，可以考虑添加压缩
 ALTER TABLE a_stock_level1_data SET (timescaledb.compress,timescaledb.compress_segmentby = 'ts_code');
-
--- 设置压缩策略（比如7天后的数据自动压缩）
 SELECT add_compression_policy('a_stock_level1_data', INTERVAL '7 days');
 
 

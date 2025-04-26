@@ -1,5 +1,9 @@
 # A股量化交易
-从baostock下载历史K线数据  
-用backtrader做回测框架  
-用quantstats评估策略效果  
-用PyMoo进行多参数优化  
+文件命名规则
+common:通用工具类  
+config:配置文件  
+01:数据下载  
+02:策略回测  
+03:交易策略  
+04:sql  
+99:临时

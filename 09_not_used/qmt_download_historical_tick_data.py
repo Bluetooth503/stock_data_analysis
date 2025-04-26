@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from qmt_common import *
+from common_qmt import *
 import tushare as ts
 from xtquant import xtdata
 xtdata.enable_hello = False
