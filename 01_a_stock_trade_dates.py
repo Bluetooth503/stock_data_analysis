@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 from common import *
-from sqlalchemy import text
-import schedule
 import tushare as ts
 import traceback
+import schedule
 
 # ================================= 配置 =================================
 run_time = "17:00"

@@ -8,10 +8,6 @@ from loguru import logger
 import warnings
 warnings.filterwarnings("ignore") # 屏蔽jupyter的告警显示
 import pandas as pd
-pd.set_option('display.float_format',lambda x:'%.4f' % x)
-pd.set_option('display.unicode.ambiguous_as_wide', True)
-pd.set_option('display.unicode.east_asian_width', True)
-pd.set_option('display.width', 180)
 import numpy as np
 import math
 from scipy import stats
@@ -27,6 +23,38 @@ from io import StringIO
 import csv
 import inspect
 
+def load_config():
+    """加载配置文件"""
+    config = configparser.ConfigParser()
+    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+    if not os.path.exists(config_path):
+        raise FileNotFoundError("配置文件 'config.ini' 不存在！")
+    config.read(config_path, encoding='utf-8')
+    return config
+
+def setup_logger(prefix=None):
+    """设置日志记录器"""
+    if prefix is None:
+        caller_file = os.path.basename(inspect.stack()[1].filename)
+        prefix = os.path.splitext(caller_file)[0]
+    caller_dir = os.path.dirname(os.path.abspath(inspect.stack()[1].filename))
+    logs_dir = os.path.join(caller_dir, 'logs')
+    os.makedirs(logs_dir, exist_ok=True)
+    log_file = os.path.join(logs_dir, f'{prefix}.log')
+    logger.remove()
+    logger.add(
+        sink=sys.stderr,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+        level="INFO")
+    logger.add(
+        sink=log_file,
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+        level="INFO",
+        rotation="10 MB",
+        retention="30 days",
+        encoding="utf-8",
+        enqueue=True)
+    return logger
 
 def convert_to_baostock_code(ts_code: str) -> str:
     """将 tushare 格式的代码转换为 baostock 格式"""
@@ -40,15 +68,6 @@ def convert_to_tushare_code(baostock_code: str) -> str:
     market, code = baostock_code.split('.')
     market = market.upper()
     return f"{code}.{market}"
-
-def load_config():
-    """加载配置文件"""
-    config = configparser.ConfigParser()
-    config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
-    if not os.path.exists(config_path):
-        raise FileNotFoundError("配置文件 'config.ini' 不存在！")
-    config.read(config_path, encoding='utf-8')
-    return config
 
 def get_pg_connection_string(config):
     """获取PostgreSQL连接字符串"""
@@ -80,106 +99,46 @@ def get_30m_kline_data(fq_code, ts_code, start_date=None, end_date=None):
     df = df.dropna()
     return df
 
-def setup_logger(prefix=None):
-    """设置日志记录器"""
-    if prefix is None:
-        # 获取调用者的文件名作为前缀
-        caller_file = os.path.basename(inspect.stack()[1].filename)
-        prefix = os.path.splitext(caller_file)[0]
-
-    # 获取调用者脚本所在目录
-    caller_dir = os.path.dirname(os.path.abspath(inspect.stack()[1].filename))
-    log_file = os.path.join(caller_dir, f'{prefix}.log')
-
-    # 移除默认的sink
-    logger.remove()
-
-    # 添加控制台输出
-    logger.add(
-        sink=sys.stderr,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-        level="INFO"  # 使用INFO级别，只显示必要信息
-    )
-
-    # 添加文件输出
-    logger.add(
-        sink=log_file,
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
-        level="INFO",  # 使用INFO级别，只记录必要信息
-        rotation="10 MB",
-        retention="30 days",
-        encoding="utf-8",  # 添加UTF-8编码支持，解决中文乱码问题
-        enqueue=True      # 启用异步写入，提高性能
-    )
-    return logger
-
 
 def upsert_data(df: pd.DataFrame, table_name: str, temp_table: str, insert_sql: str, engine) -> None:
     """使用临时表进行批量更新"""
     with engine.begin() as conn:
         if engine.url.drivername.startswith('postgresql'):
-            # 对于PostgreSQL，使用COPY命令进行快速导入
             from io import StringIO
             import csv
-            
             logger.info(f'开始导入数据到 {temp_table}')
-            # 创建临时表结构
             df.head(0).to_sql(temp_table, conn, if_exists='replace', index=False)
-            
-            # 将整个数据框直接转换为CSV格式
             output = StringIO()
             df.to_csv(output, sep='\t', header=False, index=False, quoting=csv.QUOTE_MINIMAL)
             output.seek(0)
-            
-            # 使用COPY命令一次性导入所有数据
             cur = conn.connection.cursor()
             cur.copy_from(output, temp_table, sep='\t', null='')
-            
         else:
-            # 对于其他数据库，使用分批导入
             chunk_size = 100000  # 每批处理的行数
             total_rows = len(df)
-            
             for i in tqdm(range(0, total_rows, chunk_size), desc="导入进度"):
                 chunk_df = df.iloc[i:i + chunk_size]
                 chunk_df.to_sql(temp_table, conn, if_exists='append' if i > 0 else 'replace', index=False, method='multi')
-        
         conn.execute(text(insert_sql))
         conn.execute(text(f"DROP TABLE IF EXISTS {temp_table}"))
-
 
 def save_to_database(df: pd.DataFrame, table_name: str, conflict_columns: list, data_type: str = None, engine = None, update_columns: list = None) -> bool:
     """使用COPY命令导入数据"""
     try:
-        # 参数处理
         if data_type is None:
-            data_type = table_name
-            
+            data_type = table_name   
         if engine is None:
             config = load_config()
             engine = create_engine(get_pg_connection_string(config))
-        
-        # 创建带时间戳的临时表名，避免并发冲突
         temp_table = f"temp_{table_name.split('.')[-1]}_{int(time.time())}"
-        
         with engine.begin() as conn:
-            # 创建临时表结构
             df.head(0).to_sql(temp_table, conn, if_exists='replace', index=False)
-            
-            # 使用COPY命令快速导入数据
             cur = conn.connection.cursor()
-            
-            # 将DataFrame转换为CSV格式
             output = StringIO()
             df.to_csv(output, sep='\t', header=False, index=False, quoting=csv.QUOTE_MINIMAL)
             output.seek(0)
-            
-            # 使用COPY命令一次性导入所有数据
             cur.copy_from(output, temp_table, sep='\t', null='')
-            
-            # 构建UPSERT操作的SQL语句
             if update_columns:
-                # 构建UPDATE SET子句，为特殊字符的列名添加双引号
                 set_clause = ", ".join([f'"{col}" = EXCLUDED."{col}"' for col in update_columns])
                 insert_sql = f"""
                     INSERT INTO {table_name}
@@ -193,19 +152,13 @@ def save_to_database(df: pd.DataFrame, table_name: str, conflict_columns: list, 
                     SELECT * FROM {temp_table}
                     ON CONFLICT ({', '.join([f'"{col}"' for col in conflict_columns])}) DO NOTHING
                 """
-            
             conn.execute(text(insert_sql))
-            
-            # 清理临时表
-            conn.execute(text(f"DROP TABLE IF EXISTS {temp_table}"))
-            
+            conn.execute(text(f"DROP TABLE IF EXISTS {temp_table}"))            
         logger.info(f"成功保存 {len(df)}条 {data_type} 数据到 {table_name} 表")
         return True
-        
     except Exception as e:
         logger.error(f"保存{data_type}数据时出错: {str(e)}")
         return False
-
 
 def convert_date_format(date_str: str) -> str:
     """将 YYYYMMDD 格式转换为 YYYY-MM-DD 格式"""
@@ -213,177 +166,39 @@ def convert_date_format(date_str: str) -> str:
 
 def format_time(time_str):
     """格式化时间字符串"""
-    # 提取小时和分钟
     hour = time_str[8:10]
     minute = time_str[10:12]
     return f"{hour}:{minute}:00"
 
-# heikin_ashi函数
-def heikin_ashi(df):
-    df = df.copy()
-    df.ta.ha(append=True)
-    ha_ohlc = {"HA_open": "ha_open", "HA_high": "ha_high", "HA_low": "ha_low", "HA_close": "ha_close"}
-    df.rename(columns=ha_ohlc, inplace=True)
-    return df
-
-def supertrend(df, length, multiplier):
-    '''direction=1上涨，-1下跌'''
-    df = df.copy()
-    supertrend_df = ta.supertrend(df['ha_high'], df['ha_low'], df['ha_close'], length, multiplier)
-    df['supertrend'] = supertrend_df[f'SUPERT_{length}_{multiplier}.0']
-    df['direction'] = supertrend_df[f'SUPERTd_{length}_{multiplier}.0']
-    return df
-
-def ha_st_pandas_ta(df, length, multiplier):
-    '''direction=1上涨，-1下跌'''
-    df = df.copy()
-    length = int(round(length))
-    multiplier = float(multiplier)
-    df.ta.ha(append=True)
-    ha_ohlc = {"HA_open": "ha_open", "HA_high": "ha_high", "HA_low": "ha_low", "HA_close": "ha_close"}
-    df.rename(columns=ha_ohlc, inplace=True)
-    
-    supertrend_df = ta.supertrend(df['ha_high'], df['ha_low'], df['ha_close'], length, multiplier)
-    supert_col = f'SUPERT_{length}_{multiplier}'
-    direction_col = f'SUPERTd_{length}_{multiplier}'
-    
-    df['supertrend'] = supertrend_df[supert_col]
-    df['direction'] = supertrend_df[direction_col]
-    return df
-
-def ha_st_pine(df, length, multiplier):
-    # ========== Heikin Ashi计算 ==========
-    '''direction=1上涨，-1下跌'''
-    df = df.copy()
-    
-    # 使用向量化操作计算HA价格
-    ha_close = (df['open'] + df['high'] + df['low'] + df['close']) / 4
-    
-    # 使用向量化操作计算HA开盘价
-    ha_open = pd.Series(index=df.index, dtype=float)
-    ha_open.iloc[0] = (df['open'].iloc[0] + df['close'].iloc[0]) / 2
-    
-    # 使用向量化操作计算HA高低价
-    ha_high = pd.Series(index=df.index, dtype=float)
-    ha_low = pd.Series(index=df.index, dtype=float)
-    
-    # 使用cumsum和shift进行向量化计算
-    for i in range(1, len(df)):
-        ha_open.iloc[i] = (ha_open.iloc[i-1] + ha_close.iloc[i-1]) / 2
-    
-    # 向量化计算HA高低价
-    ha_high = df[['high']].join(pd.DataFrame({
-        'ha_open': ha_open,
-        'ha_close': ha_close
-    })).max(axis=1)
-    
-    ha_low = df[['low']].join(pd.DataFrame({
-        'ha_open': ha_open,
-        'ha_close': ha_close
-    })).min(axis=1)
-    
-    # ========== ATR计算 ==========
-    # 使用向量化操作计算TR
-    tr1 = ha_high - ha_low
-    tr2 = (ha_high - ha_close.shift(1)).abs()
-    tr3 = (ha_low - ha_close.shift(1)).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    
-    # 使用向量化操作计算RMA
-    rma = pd.Series(index=df.index, dtype=float)
-    alpha = 1.0 / length
-    
-    # 初始化RMA
-    rma.iloc[length-1] = tr.iloc[:length].mean()
-    
-    # 使用向量化操作计算RMA
-    for i in range(length, len(df)):
-        rma.iloc[i] = alpha * tr.iloc[i] + (1 - alpha) * rma.iloc[i-1]
-    
-    # ========== SuperTrend计算 ==========
-    src = (ha_high + ha_low) / 2
-    upper_band = pd.Series(index=df.index, dtype=float)
-    lower_band = pd.Series(index=df.index, dtype=float)
-    super_trend = pd.Series(index=df.index, dtype=float)
-    direction = pd.Series(0, index=df.index)
-    
-    # 初始化第一个有效值
-    start_idx = length - 1
-    upper_band.iloc[start_idx] = src.iloc[start_idx] + multiplier * rma.iloc[start_idx]
-    lower_band.iloc[start_idx] = src.iloc[start_idx] - multiplier * rma.iloc[start_idx]
-    super_trend.iloc[start_idx] = upper_band.iloc[start_idx]
-    direction.iloc[start_idx] = 1
-    
-    # 使用向量化操作计算SuperTrend
-    for i in range(start_idx+1, len(df)):
-        current_upper = src.iloc[i] + multiplier * rma.iloc[i]
-        current_lower = src.iloc[i] - multiplier * rma.iloc[i]
-        
-        lower_band.iloc[i] = current_lower if (current_lower > lower_band.iloc[i-1] or ha_close.iloc[i-1] < lower_band.iloc[i-1]) else lower_band.iloc[i-1]
-        upper_band.iloc[i] = current_upper if (current_upper < upper_band.iloc[i-1] or ha_close.iloc[i-1] > upper_band.iloc[i-1]) else upper_band.iloc[i-1]
-        
-        if i == start_idx or pd.isna(rma.iloc[i-1]):
-            direction.iloc[i] = -1
-        elif super_trend.iloc[i-1] == upper_band.iloc[i-1]:
-            direction.iloc[i] = 1 if ha_close.iloc[i] > upper_band.iloc[i] else -1
-        else:
-            direction.iloc[i] = -1 if ha_close.iloc[i] < lower_band.iloc[i] else 1
-        
-        super_trend.iloc[i] = lower_band.iloc[i] if direction.iloc[i] == 1 else upper_band.iloc[i]
-    
-    # 将计算结果添加到DataFrame中
-    df['ha_open'] = ha_open
-    df['ha_high'] = ha_high
-    df['ha_low'] = ha_low
-    df['ha_close'] = ha_close
-    df['supertrend'] = super_trend
-    df['direction'] = direction
-    
-    return df
-
 def send_notification(subject, content):
     """发送微信通知"""
     try:
-        # 从配置文件获取token和uid
         config = load_config()
         token = config.get('wxpusher', 'token')
         uids = [config.get('wxpusher', 'uid')]
-        
-        # 发送消息
         WxPusher.send_message(
             content=f"{subject}\n\n{content}",
             uids=uids,
-            token=token
-        )
-        # logger.info(f"微信通知发送成功: {subject}")
+            token=token)
     except Exception as e:
         logger.error(f"微信通知发送失败: {str(e)}")
-
 
 def send_notification_pushplus(subject, content):
     """使用PushPlus发送微信通知"""
     try:
-        # 从配置文件获取token
         config = load_config()
         token = config.get('pushplus', 'token')
         url = "http://www.pushplus.plus/send"
-        
-        # 准备请求数据
         data = {
             "token": token,
             "title": subject,
             "content": content,
-            "template": "html"  # 可选：html, json, markdown, cloudMonitor
-        }
-        
-        # 发送请求
+            "template": "html"
+            }
         response = requests.post(url, json=data)
-        
-        # 检查响应
         if response.status_code == 200:
             result = response.json()
             if result.get('code') == 200:
-                # logger.info(f"微信通知发送成功: {subject}")
                 return True
             else:
                 logger.error(f"微信通知发送失败: {result.get('msg')}")
@@ -398,22 +213,13 @@ def send_notification_pushplus(subject, content):
 def send_notification_wecom(subject, content):
     """使用企业微信发送通知"""
     try:
-        # 从配置文件获取webhook地址
         config = load_config()
         webhook = config.get('wecom', 'webhook')
-            
-        # 准备消息内容
         message = {
             "msgtype": "markdown",
-            "markdown": {
-                "content": f"### {subject}\n{content}"
-            }
+            "markdown": {"content": f"### {subject}\n{content}"}
         }
-        
-        # 发送请求
         response = requests.post(webhook, json=message)
-        
-        # 检查响应
         if response.status_code == 200:
             result = response.json()
             if result.get('errcode') == 0:
@@ -424,11 +230,9 @@ def send_notification_wecom(subject, content):
         else:
             logger.error(f"企业微信通知发送失败，HTTP状态码: {response.status_code}")
             return False
-            
     except Exception as e:
         logger.error(f"企业微信通知发送失败: {str(e)}")
         return False
-
 
 # ================================= 重试装饰器 =================================
 def retry_on_failure(max_retries=3, delay=1):
@@ -442,10 +246,8 @@ def retry_on_failure(max_retries=3, delay=1):
                         if success:
                             return seq, True
                     else:
-                        # 对于返回列表的情况（如get_positions），直接返回结果
                         if isinstance(result, list):
                             return result
-                        # 对于返回整数的情况
                         if result > 0:
                             return result, True
                     if attempt < max_retries - 1:

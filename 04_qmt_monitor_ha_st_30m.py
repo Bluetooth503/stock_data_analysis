@@ -17,7 +17,7 @@ class Config:
         # 如果没有传入配置，则使用全局配置
         self.config = load_config()
         self.trading_config = {
-            'qmt_path': r'C:\国金证券QMT交易端\userdata_mini',
+            'qmt_path': self.config.get('qmt', 'path'),
             'buy_threshold': 20000,  # 买入资金阈值
             'buy_price_ratio': 1.005,  # 买入价格比例
             'sell_price_ratio': 0.995,  # 卖出价格比例
@@ -260,7 +260,7 @@ def run_market_analysis():
             calc_args.append((code, stock_data, stock_params))
 
     # 并行计算信号
-    with Pool(processes=2) as pool:
+    with Pool(processes=30) as pool:
         signal_results = pool.map(calculate_signals, calc_args)
 
     # 过滤出有效信号
@@ -326,7 +326,7 @@ def setup_schedule():
         schedule_time_sell_check = f"{hour:02d}:{minute:02d}:55"
         schedule.every().day.at(schedule_time_sell_check).do(check_positions)
 
-    # 额外的15分和45分持仓检查（排除11:30-13:00的休市时间）
+    # 额外的15分和45分持仓检查
     for hour in range(9, 15):
         for minute in [15, 45]:
             if (hour == 9 and minute < 35) or (11 < hour < 13) or (hour == 14 and minute > 45):

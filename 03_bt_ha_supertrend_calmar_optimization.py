@@ -25,6 +25,22 @@ N_ITERATIONS = 50  # 贝叶斯优化的迭代次数
 N_CANDIDATES = 200  # 每次迭代生成的候选点数量
 UCB_KAPPA = 1.5  # UCB采集函数的置信区间参数
 
+# ================================= ha_st计算 =================================
+def ha_st_pandas_ta(df, length, multiplier):
+    '''direction=1上涨，-1下跌'''
+    df = df.copy()
+    length = int(round(length))
+    multiplier = float(multiplier)
+    df.ta.ha(append=True)
+    ha_ohlc = {"HA_open": "ha_open", "HA_high": "ha_high", "HA_low": "ha_low", "HA_close": "ha_close"}
+    df.rename(columns=ha_ohlc, inplace=True)
+    supertrend_df = ta.supertrend(df['ha_high'], df['ha_low'], df['ha_close'], length, multiplier)
+    supert_col = f'SUPERT_{length}_{multiplier}'
+    direction_col = f'SUPERTd_{length}_{multiplier}'
+    df['supertrend'] = supertrend_df[supert_col]
+    df['direction'] = supertrend_df[direction_col]
+    return df
+
 # ================================= 函数定义 =================================
 class HeikinAshiData(bt.feeds.PandasData):
     lines = ('direction', 'supertrend',)

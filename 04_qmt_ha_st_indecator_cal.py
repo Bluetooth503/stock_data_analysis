@@ -114,14 +114,13 @@ def ha_st_pine(df, length, multiplier):
     
     return df
 
-xtdata.download_history_data(ts_code, period='5m', start_time='20240101')
-xtdata.subscribe_quote(ts_code, '5m')
+xtdata.download_history_data(ts_code, period='30m', start_time='20240101')
+seq = xtdata.subscribe_quote(ts_code, '30m')
 df = xtdata.get_market_data_ex([], [ts_code], period='30m', start_time='20240101')
 df = df[ts_code]
 df['trade_time'] = pd.to_datetime(df['time'].apply(lambda x: datetime.fromtimestamp(x / 1000.0)))
 df = ha_st_pine(df, length=df_parm['period'].iloc[0], multiplier=df_parm['multiplier'].iloc[0])
 df['ts_code'] = ts_code
 df = df.round(3)
-# if '0930' <= datetime.now().strftime('%H%M') <= '1500':
-#     df = df.iloc[:-1]  # xtdata.subscribe_quote是秒级的,会产生未完结30mK线数据
-print(df[['trade_time','ts_code','direction','open','high','low','close','ha_close','supertrend']].tail(16))
+print(df[['trade_time','ts_code','direction','open','high','low','close','ha_close','supertrend']].tail(8))
+xtdata.unsubscribe_quote(seq)

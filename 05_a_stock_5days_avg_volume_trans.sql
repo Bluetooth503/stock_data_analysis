@@ -32,10 +32,3 @@ BEGIN
     RAISE NOTICE 'a_stock_5days_avg_volume_trans refreshed at %', now();
 END;
 $$ LANGUAGE plpgsql;
-
-
--- 首先确保pg_cron扩展已安装
-CREATE EXTENSION IF NOT EXISTS pg_cron;
-
--- 设置每天17:00刷新
-SELECT cron.schedule('0 17 * * *', 'SELECT refresh_stock_5days_avg_volume_trans()');
