@@ -8,6 +8,30 @@ token = config.get('tushare', 'token')
 pro = ts.pro_api(token)
 engine = create_engine(get_pg_connection_string(config))
 
+
+def upsert_data(df: pd.DataFrame, table_name: str, temp_table: str, insert_sql: str, engine) -> None:
+    """使用临时表进行批量更新"""
+    with engine.begin() as conn:
+        if engine.url.drivername.startswith('postgresql'):
+            from io import StringIO
+            import csv
+            logger.info(f'开始导入数据到 {temp_table}')
+            df.head(0).to_sql(temp_table, conn, if_exists='replace', index=False)
+            output = StringIO()
+            df.to_csv(output, sep='\t', header=False, index=False, quoting=csv.QUOTE_MINIMAL)
+            output.seek(0)
+            cur = conn.connection.cursor()
+            cur.copy_from(output, temp_table, sep='\t', null='')
+        else:
+            chunk_size = 100000  # 每批处理的行数
+            total_rows = len(df)
+            for i in tqdm(range(0, total_rows, chunk_size), desc="导入进度"):
+                chunk_df = df.iloc[i:i + chunk_size]
+                chunk_df.to_sql(temp_table, conn, if_exists='append' if i > 0 else 'replace', index=False, method='multi')
+        conn.execute(text(insert_sql))
+        conn.execute(text(f"DROP TABLE IF EXISTS {temp_table}"))
+
+
 # ================================= 概念指数,行业指数成分股 =================================
 def get_ths_index_members():
     df_indices = pro.ths_index(exchange='A')

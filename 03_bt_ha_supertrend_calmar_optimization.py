@@ -41,6 +41,32 @@ def ha_st_pandas_ta(df, length, multiplier):
     df['direction'] = supertrend_df[direction_col]
     return df
 
+# ================================= 取数 =================================
+def get_30m_kline_data(fq_code, ts_code, start_date=None, end_date=None):
+    """从PostgreSQL数据库获取股票数据，返回DataFrame"""
+    config = load_config()
+    engine = create_engine(get_pg_connection_string(config))
+    query = f"""
+        SELECT trade_time, ts_code, open, high, low, close, volume, amount
+        FROM a_stock_30m_kline_{fq_code}_baostock
+        WHERE ts_code = '{ts_code}'
+    """
+    # 添加日期范围条件
+    if start_date:
+        query += f" AND trade_time >= '{start_date}'"
+    if end_date:
+        query += f" AND trade_time <= '{end_date}'"
+    # 按日期和时间排序
+    query += "ORDER BY trade_time"
+    df = pd.read_sql(query, engine)
+    # 确保数据类型正确
+    numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount']
+    for col in numeric_columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    # 删除任何包含 NaN 的行
+    df = df.dropna()
+    return df
+
 # ================================= 函数定义 =================================
 class HeikinAshiData(bt.feeds.PandasData):
     lines = ('direction', 'supertrend',)

@@ -402,3 +402,75 @@ CREATE TABLE "public"."a_stock_5m_kline_wfq_baostock" (
 ALTER TABLE "public"."a_stock_5m_kline_wfq_baostock" OWNER TO "postgres";
 CREATE INDEX "a_stock_5m_kline_wfq_baostock_trade_time_idx" ON "public"."a_stock_5m_kline_wfq_baostock" USING btree ("trade_time" "pg_catalog"."timestamp_ops" ASC NULLS LAST);
 CREATE INDEX "idx_5m_kline_wfq_baostock_ts_code" ON "public"."a_stock_5m_kline_wfq_baostock" USING btree ("ts_code" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST);
+
+
+
+
+CREATE TABLE public.ods_a_stock_level1_data (
+	ts_code varchar(16) NOT NULL,
+	trade_time timestamptz(6) NOT NULL,
+	last_price float8 NULL,
+	"open" float8 NULL,
+	high float8 NULL,
+	low float8 NULL,
+	pre_close float8 NULL,
+	volume int8 NULL,
+	amount float8 NULL,
+	pvolume int8 NULL,
+	transaction_num int8 NULL,
+	bid_price1 float8 NULL,
+	bid_volume1 int8 NULL,
+	bid_price2 float8 NULL,
+	bid_volume2 int8 NULL,
+	bid_price3 float8 NULL,
+	bid_volume3 int8 NULL,
+	bid_price4 float8 NULL,
+	bid_volume4 int8 NULL,
+	bid_price5 float8 NULL,
+	bid_volume5 int8 NULL,
+	ask_price1 float8 NULL,
+	ask_volume1 int8 NULL,
+	ask_price2 float8 NULL,
+	ask_volume2 int8 NULL,
+	ask_price3 float8 NULL,
+	ask_volume3 int8 NULL,
+	ask_price4 float8 NULL,
+	ask_volume4 int8 NULL,
+	ask_price5 float8 NULL,
+	ask_volume5 int8 NULL,
+	CONSTRAINT ods_a_stock_level1_data_unique UNIQUE (ts_code, trade_time)
+);
+CREATE INDEX ods_a_stock_level1_data_trade_time_idx ON public.ods_a_stock_level1_data USING btree (trade_time);
+CREATE INDEX ods_a_stock_level1_data_ts_code_idx ON public.ods_a_stock_level1_data USING btree (ts_code);
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ts_code" IS '证券代码';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."trade_time" IS '交易时间(含时区)';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."last_price" IS '最新成交价';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."open" IS '开盘价';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."high" IS '最高价';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."low" IS '最低价';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."pre_close" IS '前收盘价';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."volume" IS '成交量(手)';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."amount" IS '成交金额';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."pvolume" IS '原始成交总量(未经过股手转换)';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."transaction_num" IS '成交笔数';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."bid_price1" IS '买一价';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."bid_volume1" IS '买一量';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."bid_price2" IS '买二价';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."bid_volume2" IS '买二量';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."bid_price3" IS '买三价';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."bid_volume3" IS '买三量';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."bid_price4" IS '买四价';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."bid_volume4" IS '买四量';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."bid_price5" IS '买五价';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."bid_volume5" IS '买五量';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_price1" IS '卖一价';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_volume1" IS '卖一量';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_price2" IS '卖二价';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_volume2" IS '卖二量';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_price3" IS '卖三价';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_volume3" IS '卖三量';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_price4" IS '卖四价';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_volume4" IS '卖四量';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_price5" IS '卖五价';
+COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_volume5" IS '卖五量';
+COMMENT ON TABLE "public"."ods_a_stock_level1_data" IS 'A股Level1快照历史数据';

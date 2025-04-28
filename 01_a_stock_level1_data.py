@@ -1,4 +1,4 @@
-from common_qmt import *
+from common import *
 from xtquant import xtdata
 xtdata.enable_hello = False
 
@@ -41,13 +41,19 @@ class StockQuote:
 class Level1DataProcessor:
     """Level1行情数据处理器"""
     def __init__(self):
+        self.stop_time = datetime.strptime('16:00:00', '%H:%M:%S').time()
+        self.tz = timezone(timedelta(hours=8))
         self.config = load_config()
         self.logger = setup_logger()
         self.running = True
         self.subscription_seq = None
         self.data_queue = queue.Queue(maxsize=20000)
-        self.batch_size = 500
-        self.save_interval = 0.1
+        self.batch_size = 1000  # 每1000条保存一次
+        self.save_interval = 1  # 每10秒保存一次
+        self.last_status_time = time.time()
+        self.status_interval = 600  # 每10分钟输出一次状态
+        self.total_received = 0
+        self.total_saved = 0
         
         self.db_pool = pool.ThreadedConnectionPool(
             minconn=50,
@@ -105,11 +111,13 @@ class Level1DataProcessor:
             # 执行COPY命令
             cur.copy_expert(copy_sql, csv_data)
             conn.commit()
-            
-            # 只在保存大批量数据时输出日志
-            if len(quotes) >= 5000:
-                self.logger.info(f"已保存 {len(quotes)} 条数据")
-            
+                        
+            # 定期输出状态统计
+            current_time = time.time()
+            if current_time - self.last_status_time >= self.status_interval:
+                self.logger.info(f"运行状态 - 累计接收: {self.total_received}条, 累计保存: {self.total_saved}条, 队列大小: {self.data_queue.qsize()}")
+                self.last_status_time = current_time
+
         except Exception as e:
             self.logger.error(f"数据库操作失败: {e}")
         finally:
@@ -123,7 +131,12 @@ class Level1DataProcessor:
             return
 
         try:
+            valid_count = 0
             for code, tick in datas.items():
+                # 过滤零成交量数据
+                if tick.get('volume', 0) <= 0:
+                    continue
+                valid_count += 1
                 quote = StockQuote(
                     ts_code=code,
                     timestamp=tick['time'],
@@ -154,6 +167,15 @@ class Level1DataProcessor:
                     self.data_queue.put(quote, block=False)
                 except queue.Full:
                     self.logger.warning("数据队列已满，丢弃部分数据")
+
+            if valid_count > 0:
+                self.total_received += valid_count
+                
+            # 定期输出接收状态
+            current_time = time.time()
+            if current_time - self.last_status_time >= self.status_interval:
+                self.logger.info(f"数据接收状态 - 本批次有效数据: {valid_count}条, 累计接收: {self.total_received}条, 队列大小: {self.data_queue.qsize()}")
+                self.last_status_time = current_time
 
         except Exception as e:
             self.logger.error(f"处理行情数据失败: {e}")
@@ -218,6 +240,14 @@ class Level1DataProcessor:
 
     def run(self):
         try:
+            # 校验交易日
+            current_date = datetime.now().strftime('%Y%m%d')
+            trade_dates = get_trade_dates()
+            
+            if current_date not in trade_dates:
+                self.logger.info(f"当前日期 {current_date} 非交易日，跳过执行")
+                return
+            
             process_thread = threading.Thread(target=self._process_data_worker)
             process_thread.daemon = True
             process_thread.start()
@@ -227,6 +257,10 @@ class Level1DataProcessor:
             self.subscription_seq = xtdata.subscribe_whole_quote(stock_list, callback=self.on_tick_data)
 
             while self.running:
+                current_time = datetime.now().time()
+                if current_time >= self.stop_time:
+                    self.logger.info(f"已到达收盘时间 {self.stop_time}，程序将自动停止")
+                    break
                 time.sleep(1)
 
             process_thread.join(timeout=10)

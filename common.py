@@ -1,9 +1,17 @@
 # -*- coding: utf-8 -*-
 import os
-from sqlalchemy import create_engine, text
-import psycopg2
-from datetime import datetime, date, timedelta
+import sys
 import time
+import inspect
+import schedule
+import subprocess
+import configparser
+import argparse
+from datetime import datetime, date, timedelta, timezone
+import psycopg2
+from psycopg2 import pool
+from typing import Dict, List, Optional, Callable
+from sqlalchemy import create_engine, text, DateTime
 from loguru import logger
 import warnings
 warnings.filterwarnings("ignore") # 屏蔽jupyter的告警显示
@@ -11,18 +19,20 @@ import pandas as pd
 import numpy as np
 import math
 from scipy import stats
-import configparser
 from tqdm import tqdm
-from typing import Dict, List, Optional, Callable
-import sys
 import pandas_ta as ta
 import talib
 from wxpusher import WxPusher
 import requests
 from io import StringIO
 import csv
-import inspect
+from dataclasses import dataclass
+import queue
+import signal
+import threading
+import tushare as ts
 
+# ================================= 通用函数 =================================
 def load_config():
     """加载配置文件"""
     config = configparser.ConfigParser()
@@ -56,6 +66,11 @@ def setup_logger(prefix=None):
         enqueue=True)
     return logger
 
+# ================================= 读取配置文件 =================================
+config = load_config()
+token = config.get('tushare', 'token')
+pro = ts.pro_api(token)
+
 def convert_to_baostock_code(ts_code: str) -> str:
     """将 tushare 格式的代码转换为 baostock 格式"""
     code, market = ts_code.split('.')
@@ -74,86 +89,44 @@ def get_pg_connection_string(config):
     pg_config = config['postgresql']
     return f"postgresql://{pg_config['user']}:{pg_config['password']}@{pg_config['host']}:{pg_config['port']}/{pg_config['database']}"
 
-def get_30m_kline_data(fq_code, ts_code, start_date=None, end_date=None):
-    """从PostgreSQL数据库获取股票数据，返回DataFrame"""
-    config = load_config()
-    engine = create_engine(get_pg_connection_string(config))
-    query = f"""
-        SELECT trade_time, ts_code, open, high, low, close, volume, amount
-        FROM a_stock_30m_kline_{fq_code}_baostock
-        WHERE ts_code = '{ts_code}'
-    """
-    # 添加日期范围条件
-    if start_date:
-        query += f" AND trade_time >= '{start_date}'"
-    if end_date:
-        query += f" AND trade_time <= '{end_date}'"
-    # 按日期和时间排序
-    query += "ORDER BY trade_time"
-    df = pd.read_sql(query, engine)
-    # 确保数据类型正确
-    numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount']
-    for col in numeric_columns:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-    # 删除任何包含 NaN 的行
-    df = df.dropna()
-    return df
-
-
-def upsert_data(df: pd.DataFrame, table_name: str, temp_table: str, insert_sql: str, engine) -> None:
-    """使用临时表进行批量更新"""
-    with engine.begin() as conn:
-        if engine.url.drivername.startswith('postgresql'):
-            from io import StringIO
-            import csv
-            logger.info(f'开始导入数据到 {temp_table}')
-            df.head(0).to_sql(temp_table, conn, if_exists='replace', index=False)
-            output = StringIO()
-            df.to_csv(output, sep='\t', header=False, index=False, quoting=csv.QUOTE_MINIMAL)
-            output.seek(0)
-            cur = conn.connection.cursor()
-            cur.copy_from(output, temp_table, sep='\t', null='')
-        else:
-            chunk_size = 100000  # 每批处理的行数
-            total_rows = len(df)
-            for i in tqdm(range(0, total_rows, chunk_size), desc="导入进度"):
-                chunk_df = df.iloc[i:i + chunk_size]
-                chunk_df.to_sql(temp_table, conn, if_exists='append' if i > 0 else 'replace', index=False, method='multi')
-        conn.execute(text(insert_sql))
-        conn.execute(text(f"DROP TABLE IF EXISTS {temp_table}"))
-
 def save_to_database(df: pd.DataFrame, table_name: str, conflict_columns: list, data_type: str = None, engine = None, update_columns: list = None) -> bool:
-    """使用COPY命令导入数据"""
+    """使用COPY命令高效导入数据到PostgreSQL数据库
+    
+    Args:
+        df: 要保存的数据框
+        table_name: 目标表名
+        conflict_columns: 用于处理冲突的列名列表
+        data_type: 数据类型描述，用于日志记录
+        engine: SQLAlchemy引擎实例
+        dtype: 指定临时表字段类型的字典
+        update_columns: 发生冲突时需要更新的列名列表
+    """
     try:
-        if data_type is None:
-            data_type = table_name   
-        if engine is None:
-            config = load_config()
-            engine = create_engine(get_pg_connection_string(config))
-        temp_table = f"temp_{table_name.split('.')[-1]}_{int(time.time())}"
+        data_type = data_type or table_name
+        engine = engine or create_engine(get_pg_connection_string(load_config()))
         with engine.begin() as conn:
+            # 创建临时表并使用COPY命令导入数据
+            temp_table = f"temp_{table_name.split('.')[-1]}_{int(time.time())}"
             df.head(0).to_sql(temp_table, conn, if_exists='replace', index=False)
-            cur = conn.connection.cursor()
-            output = StringIO()
-            df.to_csv(output, sep='\t', header=False, index=False, quoting=csv.QUOTE_MINIMAL)
-            output.seek(0)
-            cur.copy_from(output, temp_table, sep='\t', null='')
+            # 准备CSV数据并执行COPY
+            with StringIO() as output:
+                df.to_csv(output, sep='\t', header=False, index=False, quoting=csv.QUOTE_MINIMAL)
+                output.seek(0)
+                conn.connection.cursor().copy_from(output, temp_table, sep='\t', null='')
+            # 构建并执行UPSERT语句
+            conflict_cols = ', '.join(f'"{col}"' for col in conflict_columns)
+            # 构建SQL语句            
+            insert_columns = [f'"{col}"' for col in df.columns]
+            select_columns = [f'TO_TIMESTAMP("{col}"::BIGINT)' if col == 'trade_time' else f'"{col}"' for col in df.columns]
+            insert_clause = ', '.join(insert_columns)
+            select_clause = ', '.join(select_columns)
             if update_columns:
-                set_clause = ", ".join([f'"{col}" = EXCLUDED."{col}"' for col in update_columns])
-                insert_sql = f"""
-                    INSERT INTO {table_name}
-                    SELECT * FROM {temp_table}
-                    ON CONFLICT ({', '.join([f'"{col}"' for col in conflict_columns])})
-                    DO UPDATE SET {set_clause}
-                """
+                set_clause = ', '.join(f'"{col}" = EXCLUDED."{col}"' for col in update_columns)
+                sql = f"INSERT INTO {table_name} ({insert_clause}) SELECT {select_clause} FROM {temp_table} ON CONFLICT ({conflict_cols}) DO UPDATE SET {set_clause}"
             else:
-                insert_sql = f"""
-                    INSERT INTO {table_name}
-                    SELECT * FROM {temp_table}
-                    ON CONFLICT ({', '.join([f'"{col}"' for col in conflict_columns])}) DO NOTHING
-                """
-            conn.execute(text(insert_sql))
-            conn.execute(text(f"DROP TABLE IF EXISTS {temp_table}"))            
+                sql = f"INSERT INTO {table_name} ({insert_clause}) SELECT {select_clause} FROM {temp_table} ON CONFLICT ({conflict_cols}) DO NOTHING"
+            conn.execute(text(sql))
+            conn.execute(text(f"DROP TABLE IF EXISTS {temp_table}"))
         logger.info(f"成功保存 {len(df)}条 {data_type} 数据到 {table_name} 表")
         return True
     except Exception as e:
@@ -170,99 +143,57 @@ def format_time(time_str):
     minute = time_str[10:12]
     return f"{hour}:{minute}:00"
 
-def send_notification(subject, content):
-    """发送微信通知"""
-    try:
-        config = load_config()
-        token = config.get('wxpusher', 'token')
-        uids = [config.get('wxpusher', 'uid')]
-        WxPusher.send_message(
-            content=f"{subject}\n\n{content}",
-            uids=uids,
-            token=token)
-    except Exception as e:
-        logger.error(f"微信通知发送失败: {str(e)}")
-
-def send_notification_pushplus(subject, content):
-    """使用PushPlus发送微信通知"""
-    try:
-        config = load_config()
-        token = config.get('pushplus', 'token')
-        url = "http://www.pushplus.plus/send"
-        data = {
-            "token": token,
-            "title": subject,
-            "content": content,
-            "template": "html"
-            }
-        response = requests.post(url, json=data)
-        if response.status_code == 200:
-            result = response.json()
-            if result.get('code') == 200:
-                return True
-            else:
-                logger.error(f"微信通知发送失败: {result.get('msg')}")
-                return False
-        else:
-            logger.error(f"微信通知发送失败，HTTP状态码: {response.status_code}")
-            return False
-    except Exception as e:
-        logger.error(f"微信通知发送失败: {str(e)}")
-        return False
-
 def send_notification_wecom(subject, content):
     """使用企业微信发送通知"""
     try:
-        config = load_config()
-        webhook = config.get('wecom', 'webhook')
-        message = {
-            "msgtype": "markdown",
-            "markdown": {"content": f"### {subject}\n{content}"}
-        }
-        response = requests.post(webhook, json=message)
-        if response.status_code == 200:
-            result = response.json()
-            if result.get('errcode') == 0:
-                return True
-            else:
-                logger.error(f"企业微信通知发送失败: {result.get('errmsg')}")
-                return False
-        else:
-            logger.error(f"企业微信通知发送失败，HTTP状态码: {response.status_code}")
-            return False
+        response = requests.post(
+            load_config().get('wecom', 'webhook'),
+            json={"msgtype": "markdown", "markdown": {"content": f"### {subject}\n{content}"}}
+        )
+        if response.status_code == 200 and response.json().get('errcode') == 0:
+            return True
+        logger.error(f"企业微信通知发送失败: {response.json().get('errmsg') if response.status_code == 200 else f'HTTP状态码 {response.status_code}'}")
     except Exception as e:
         logger.error(f"企业微信通知发送失败: {str(e)}")
-        return False
+    return False
 
 # ================================= 重试装饰器 =================================
 def retry_on_failure(max_retries=3, delay=1):
+    """重试装饰器 """
     def decorator(func):
         def wrapper(*args, **kwargs):
             for attempt in range(max_retries):
                 try:
                     result = func(*args, **kwargs)
-                    if isinstance(result, tuple):
-                        seq, success = result
-                        if success:
-                            return seq, True
-                    else:
-                        if isinstance(result, list):
-                            return result
-                        if result > 0:
-                            return result, True
+                    # 处理成功情况：元组(带success标志)、列表、正数
+                    if (isinstance(result, tuple) and len(result) > 1 and result[1]) or \
+                       isinstance(result, list) or \
+                       (isinstance(result, (int, float)) and result > 0):
+                        return result
+                    
+                    # 处理失败情况
                     if attempt < max_retries - 1:
-                        logger.warning(f"尝试执行{func.__name__}失败，{attempt + 1}/{max_retries}次，等待{delay}秒后重试...")
+                        logger.warning(f"执行{func.__name__}失败，重试 {attempt + 1}/{max_retries}")
                         time.sleep(delay)
-                    else:
-                        logger.error(f"尝试执行{func.__name__}失败，已达到最大重试次数{max_retries}次")
-                        return -1, False
+                        continue
+                    logger.error(f"执行{func.__name__}失败，达到最大重试次数")
                 except Exception as e:
                     if attempt < max_retries - 1:
-                        logger.warning(f"执行{func.__name__}出错: {str(e)}，{attempt + 1}/{max_retries}次，等待{delay}秒后重试...")
+                        logger.warning(f"执行{func.__name__}异常: {str(e)}，重试 {attempt + 1}/{max_retries}")
                         time.sleep(delay)
-                    else:
-                        logger.error(f"执行{func.__name__}出错: {str(e)}，已达到最大重试次数{max_retries}次")
-                        return -1, False
+                        continue
+                    logger.error(f"执行{func.__name__}异常: {str(e)}，达到最大重试次数")
             return -1, False
         return wrapper
     return decorator
+
+# ================================= 获取最近n个交易日 =================================
+def get_trade_dates(n=14, start_date=None, end_date=None):
+    """获取交易日列表"""
+    if not start_date or not end_date:
+        end_date = datetime.now().strftime('%Y%m%d')
+        start_date = (datetime.strptime(end_date, '%Y%m%d') - timedelta(days=60)).strftime('%Y%m%d')
+    
+    calendar = pro.trade_cal(start_date=start_date, end_date=end_date)
+    trade_dates = calendar[calendar['is_open'] == 1]['cal_date'].sort_values(ascending=False)
+    return trade_dates[:n].tolist() if n else trade_dates.tolist()

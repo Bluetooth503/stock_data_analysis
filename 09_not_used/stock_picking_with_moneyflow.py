@@ -11,7 +11,32 @@ config = load_config()
 token = config.get('tushare', 'token')
 pro = ts.pro_api(token)
 engine = create_engine(get_pg_connection_string(config))
-
+def send_notification_pushplus(subject, content):
+    """使用PushPlus发送微信通知"""
+    try:
+        config = load_config()
+        token = config.get('pushplus', 'token')
+        url = "http://www.pushplus.plus/send"
+        data = {
+            "token": token,
+            "title": subject,
+            "content": content,
+            "template": "html"
+            }
+        response = requests.post(url, json=data)
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('code') == 200:
+                return True
+            else:
+                logger.error(f"微信通知发送失败: {result.get('msg')}")
+                return False
+        else:
+            logger.error(f"微信通知发送失败，HTTP状态码: {response.status_code}")
+            return False
+    except Exception as e:
+        logger.error(f"微信通知发送失败: {str(e)}")
+        return False
 
 # ================================= 获取N日交易日期 =================================
 def get_recent_trade_days(days):

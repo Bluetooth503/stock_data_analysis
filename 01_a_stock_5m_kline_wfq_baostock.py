@@ -14,18 +14,19 @@ pro = ts.pro_api(token)
 logger = setup_logger()
 
 # ================================= 定义初始变量 =================================
-stock_list = pd.read_csv('沪深A股_stock_list.csv', header=None, names=['ts_code'])
+# 获取所有上市股票列表
+data = pro.stock_basic(exchange='', list_status='L', fields='ts_code,symbol,name,area,industry,list_date')
+stock_list = data[['ts_code']]
 end_time   = datetime.today().strftime('%Y%m%d')
 period     = '5m'
 table_name = 'a_stock_5m_kline_wfq_baostock'
 
 # ================================= 获取数据库中最新的记录时间 =================================
 def get_latest_record_time(engine) -> str:
-    """获取数据库中最新的记录时间，如果表不存在或为空则返回20190101"""
+    """获取数据库中最新的记录时间"""
     query = f"""
         SELECT MAX(trade_time) 
         FROM {table_name}
-        WHERE trade_time IS NOT NULL AND trade_time < '20241101'
     """
     try:
         with engine.connect() as conn:
@@ -137,13 +138,11 @@ def save_to_database_batch(df_list, engine):
 
 def main():
     """主函数"""
-    # 登录 baostock
     bs.login()
     
     try:
         # 获取最新记录时间
         latest_time = (pd.to_datetime(get_latest_record_time(engine)) + pd.Timedelta(days=1)).strftime('%Y%m%d')
-        end_time = '20250420'
 
         # 获取股票列表
         stocks = stock_list['ts_code'].tolist()

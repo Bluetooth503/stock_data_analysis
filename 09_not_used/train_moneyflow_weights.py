@@ -20,6 +20,22 @@ logger = setup_logger()
 OUTPUT_DIR = "model_output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+
+
+
+def send_notification(subject, content):
+    """发送微信通知"""
+    try:
+        config = load_config()
+        token = config.get('wxpusher', 'token')
+        uids = [config.get('wxpusher', 'uid')]
+        WxPusher.send_message(
+            content=f"{subject}\n\n{content}",
+            uids=uids,
+            token=token)
+    except Exception as e:
+        logger.error(f"微信通知发送失败: {str(e)}")
+
 class MoneyflowWeightTrainer:
     def __init__(self, start_date, end_date, min_samples=252):
         """
