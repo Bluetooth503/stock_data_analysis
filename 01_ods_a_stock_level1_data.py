@@ -1,16 +1,12 @@
 # -*- coding: utf-8 -*-
 from common import *
-import tushare as ts
 from xtquant import xtdata
 xtdata.enable_hello = False
 
 # ================================= 读取配置文件 =================================
 logger = setup_logger()
 config = load_config()
-token = config.get('tushare', 'token')
-pro = ts.pro_api(token)
 engine = create_engine(get_pg_connection_string(config))
-
 
 # ================================= 获取所有股票代码 =================================
 def get_all_stocks():
@@ -128,8 +124,7 @@ def download_and_save_level1_data(start_date: str, end_date: str) -> None:
     # 生成有效交易日期范围
     date_range = [d for d in trade_dates if start_date <= d <= end_date]
 
-    for date in tqdm(date_range, desc="下载Level 1数据进度"):
-
+    for date in date_range:
         # 将股票分成批次并顺序处理
         batch_size = 1000  # 每批下载的股票数量
         for i in range(0, len(stocks), batch_size):

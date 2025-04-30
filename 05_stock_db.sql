@@ -331,6 +331,23 @@ CREATE INDEX "ths_index_members_ts_code_idx" ON "public"."ths_index_members" USI
 CREATE INDEX "ths_index_members_ts_name_idx" ON "public"."ths_index_members" USING btree ("ts_name" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST);
 
 
+CREATE TABLE "public"."a_stock_5m_kline_wfq_baostock" (
+  "trade_time" timestamp(6) NOT NULL,
+  "ts_code" varchar(20) COLLATE "pg_catalog"."default" NOT NULL,
+  "open" numeric(18,4),
+  "high" numeric(18,4),
+  "low" numeric(18,4),
+  "close" numeric(18,4),
+  "volume" numeric(18,4),
+  "amount" numeric(18,4),
+  "adjust_flag" int4,
+  CONSTRAINT "a_stock_5m_kline_wfq_baostock_pkey" PRIMARY KEY ("trade_time", "ts_code")
+);
+ALTER TABLE "public"."a_stock_5m_kline_wfq_baostock" OWNER TO "postgres";
+CREATE INDEX "a_stock_5m_kline_wfq_baostock_trade_time_idx" ON "public"."a_stock_5m_kline_wfq_baostock" USING btree ("trade_time" "pg_catalog"."timestamp_ops" ASC NULLS LAST);
+CREATE INDEX "idx_5m_kline_wfq_baostock_ts_code" ON "public"."a_stock_5m_kline_wfq_baostock" USING btree ("ts_code" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST);
+
+
 
 -- IMMUTABLE函数,timestamptz转日期
 CREATE OR REPLACE FUNCTION immutable_date(timestamptz) 
@@ -386,26 +403,6 @@ SELECT add_compression_policy('a_stock_level1_data', INTERVAL '7 days');
 
 
 
-
-CREATE TABLE "public"."a_stock_5m_kline_wfq_baostock" (
-  "trade_time" timestamp(6) NOT NULL,
-  "ts_code" varchar(20) COLLATE "pg_catalog"."default" NOT NULL,
-  "open" numeric(18,4),
-  "high" numeric(18,4),
-  "low" numeric(18,4),
-  "close" numeric(18,4),
-  "volume" numeric(18,4),
-  "amount" numeric(18,4),
-  "adjust_flag" int4,
-  CONSTRAINT "a_stock_5m_kline_wfq_baostock_pkey" PRIMARY KEY ("trade_time", "ts_code")
-);
-ALTER TABLE "public"."a_stock_5m_kline_wfq_baostock" OWNER TO "postgres";
-CREATE INDEX "a_stock_5m_kline_wfq_baostock_trade_time_idx" ON "public"."a_stock_5m_kline_wfq_baostock" USING btree ("trade_time" "pg_catalog"."timestamp_ops" ASC NULLS LAST);
-CREATE INDEX "idx_5m_kline_wfq_baostock_ts_code" ON "public"."a_stock_5m_kline_wfq_baostock" USING btree ("ts_code" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST);
-
-
-
-
 CREATE TABLE public.ods_a_stock_level1_data (
 	ts_code varchar(16) NOT NULL,
 	trade_time timestamptz(6) NOT NULL,
@@ -416,7 +413,6 @@ CREATE TABLE public.ods_a_stock_level1_data (
 	pre_close float8 NULL,
 	volume int8 NULL,
 	amount float8 NULL,
-	pvolume int8 NULL,
 	transaction_num int8 NULL,
 	bid_price1 float8 NULL,
 	bid_volume1 int8 NULL,
@@ -474,3 +470,35 @@ COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_volume4" IS '卖四量
 COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_price5" IS '卖五价';
 COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_volume5" IS '卖五量';
 COMMENT ON TABLE "public"."ods_a_stock_level1_data" IS 'A股Level1快照历史数据';
+SELECT create_hypertable('ods_a_stock_level1_data', 'trade_time', migrate_data => true);
+ALTER TABLE ods_a_stock_level1_data SET (timescaledb.compress,timescaledb.compress_segmentby = 'ts_code');
+SELECT add_compression_policy('ods_a_stock_level1_data', INTERVAL '3 days');
+
+
+
+CREATE TABLE ths_limit_list (
+    "trade_date" date NOT NULL,       -- 交易日期
+    ts_code TEXT NOT NULL,            -- 股票代码
+    name TEXT NOT NULL,               -- 股票名称
+    price DOUBLE PRECISION NOT NULL,  -- 收盘价(元)
+    pct_chg DOUBLE PRECISION NOT NULL,-- 涨跌幅%
+    open_num INTEGER NOT NULL,        -- 打开次数
+    lu_desc TEXT NOT NULL,            -- 涨停原因
+    limit_type TEXT NOT NULL,         -- 板单类别
+    tag TEXT NOT NULL,                -- 涨停标签
+    status TEXT NOT NULL,             -- 涨停状态(N连板、一字板)
+    first_lu_time TEXT,               -- 首次涨停时间
+    last_lu_time TEXT,                -- 最后涨停时间
+    first_ld_time TEXT,               -- 首次跌停时间
+    last_ld_time TEXT,                -- 最后涨停时间
+    limit_order DOUBLE PRECISION NOT NULL, -- 封单量(元)
+    limit_amount DOUBLE PRECISION NOT NULL,-- 封单额(元)
+    turnover_rate DOUBLE PRECISION NOT NULL, -- 换手率%
+    free_float DOUBLE PRECISION NOT NULL,   -- 实际流通(元)
+    lu_limit_order DOUBLE PRECISION NOT NULL, -- 最大封单(元)
+    limit_up_suc_rate DOUBLE PRECISION NOT NULL, -- 近一年涨停封板率
+    turnover DOUBLE PRECISION NOT NULL,      -- 成交额
+    rise_rate DOUBLE PRECISION,              -- 涨速
+    sum_float DOUBLE PRECISION,              -- 总市值(亿元)
+    market_type TEXT NOT NULL                -- 股票类型：HS沪深主板、GEM创业板、STAR科创板
+);

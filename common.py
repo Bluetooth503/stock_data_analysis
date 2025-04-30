@@ -10,7 +10,7 @@ import argparse
 from datetime import datetime, date, timedelta, timezone
 import psycopg2
 from psycopg2 import pool
-from typing import Dict, List, Optional, Callable
+from typing import Dict, List, Optional, Callable, Set
 from sqlalchemy import create_engine, text, DateTime
 from loguru import logger
 import warnings
@@ -30,9 +30,7 @@ from dataclasses import dataclass
 import queue
 import signal
 import threading
-import tushare as ts
 
-# ================================= 通用函数 =================================
 def load_config():
     """加载配置文件"""
     config = configparser.ConfigParser()
@@ -66,11 +64,6 @@ def setup_logger(prefix=None):
         enqueue=True)
     return logger
 
-# ================================= 读取配置文件 =================================
-config = load_config()
-token = config.get('tushare', 'token')
-pro = ts.pro_api(token)
-
 def convert_to_baostock_code(ts_code: str) -> str:
     """将 tushare 格式的代码转换为 baostock 格式"""
     code, market = ts_code.split('.')
@@ -91,7 +84,6 @@ def get_pg_connection_string(config):
 
 def save_to_database(df: pd.DataFrame, table_name: str, conflict_columns: list, data_type: str = None, engine = None, update_columns: list = None) -> bool:
     """使用COPY命令高效导入数据到PostgreSQL数据库
-    
     Args:
         df: 要保存的数据框
         table_name: 目标表名
@@ -117,7 +109,7 @@ def save_to_database(df: pd.DataFrame, table_name: str, conflict_columns: list, 
             conflict_cols = ', '.join(f'"{col}"' for col in conflict_columns)
             # 构建SQL语句            
             insert_columns = [f'"{col}"' for col in df.columns]
-            select_columns = [f'TO_TIMESTAMP("{col}"::BIGINT)' if col == 'trade_time' else f'"{col}"' for col in df.columns]
+            select_columns = [f'TO_TIMESTAMP("{col}"::BIGINT)' if col == 'trade_time' else f'"{col}"::DATE' if col == 'trade_date' else f'"{col}"' for col in df.columns]
             insert_clause = ', '.join(insert_columns)
             select_clause = ', '.join(select_columns)
             if update_columns:
@@ -157,7 +149,6 @@ def send_notification_wecom(subject, content):
         logger.error(f"企业微信通知发送失败: {str(e)}")
     return False
 
-# ================================= 重试装饰器 =================================
 def retry_on_failure(max_retries=3, delay=1):
     """重试装饰器 """
     def decorator(func):
@@ -193,7 +184,21 @@ def get_trade_dates(n=14, start_date=None, end_date=None):
     if not start_date or not end_date:
         end_date = datetime.now().strftime('%Y%m%d')
         start_date = (datetime.strptime(end_date, '%Y%m%d') - timedelta(days=60)).strftime('%Y%m%d')
-    
-    calendar = pro.trade_cal(start_date=start_date, end_date=end_date)
-    trade_dates = calendar[calendar['is_open'] == 1]['cal_date'].sort_values(ascending=False)
-    return trade_dates[:n].tolist() if n else trade_dates.tolist()
+    # 转换日期格式为数据库格式（YYYY-MM-DD）
+    start_date = convert_date_format(start_date)
+    end_date = convert_date_format(end_date)
+    # 创建数据库连接
+    engine = create_engine(get_pg_connection_string(load_config()))
+    # 构建SQL查询
+    sql = text("""
+        SELECT trade_date::text as cal_date
+        FROM a_stock_trade_cal
+        WHERE trade_date BETWEEN :start_date AND :end_date
+        AND is_open = '1'
+        ORDER BY trade_date DESC
+    """)
+    # 执行查询
+    with engine.connect() as conn:
+        result = conn.execute(sql, {"start_date": start_date, "end_date": end_date})
+        trade_dates = [row[0].replace('-', '') for row in result]
+    return trade_dates[:n] if n else trade_dates
