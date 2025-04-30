@@ -172,7 +172,7 @@ class QMTTrader:
         """订阅股票行情"""
         for code in code_list:
             # 订阅K线数据
-            kline_seq = xtdata.subscribe_quote(code, '5m')
+            kline_seq = xtdata.subscribe_quote(code, '30m')
             if kline_seq > 0:  # 订阅成功
                 self.subscribed_codes[f"{code}_kline"] = kline_seq
                 logger.info(f"订阅 {code} K线数据成功，订阅号: {kline_seq}")
@@ -311,7 +311,7 @@ def run_market_analysis():
     positions_dict = {pos.stock_code: pos.volume for pos in positions}
     logger.info(f"当前持仓数量: {len(positions)}, 持仓股票: {list(positions_dict.keys())}")
     # 获取合成周期数据
-    df = xtdata.get_market_data_ex([], code_list, period='30m', start_time='20240101')
+    df = xtdata.get_market_data_ex([], code_list, period='30m', start_time='20240101', end_time='')
     # 准备并行计算参数
     calc_args = []
     # 为每个股票获取计算参数
@@ -344,7 +344,7 @@ def check_positions():
         return
     # 获取持仓股票的最新数据
     position_codes = [pos.stock_code for pos in positions if pos.volume > 0]
-    df = xtdata.get_market_data_ex([], position_codes, period='30m', start_time='20240101')
+    df = xtdata.get_market_data_ex([], position_codes, period='30m', start_time='20240101', end_time='')
     # 检查每个持仓股票的状态
     warning_stocks = []
     for pos in positions:
@@ -353,6 +353,8 @@ def check_positions():
             continue
         stock_params = top_stocks[top_stocks['ts_code'] == code].iloc[0].to_dict()
         stock_data = df[code].copy()
+        # stock_data.to_csv(f"{code}_debug.csv")
+        stock_data['trade_time'] = pd.to_datetime(stock_data['time'].apply(lambda x: datetime.fromtimestamp(x / 1000.0)))
         stock_data = ha_st_pine(stock_data, stock_params['period'], stock_params['multiplier'])
         # 如果最新方向为下跌
         if stock_data['direction'].iloc[-1] == -1:
@@ -361,7 +363,7 @@ def check_positions():
     # 只在发现问题时发送通知
     if warning_stocks:
         subject = "持仓股票异常提醒"
-        content = "以下股票处于下跌趋势但是没有卖出：\n" + "\n".join(warning_stocks)
+        content = f"股票处于下跌趋势但是没有卖出：{warning_stocks}"
         logger.info(content)
         send_notification_wecom(subject, content)
 
@@ -413,7 +415,7 @@ if __name__ == "__main__":
         top_stocks = get_top_stocks()
         code_list = top_stocks['ts_code'].tolist()
         # 每次执行时下载基础周期数据
-        xtdata.download_history_data2(code_list, period='5m', start_time='20240101')
+        xtdata.download_history_data2(code_list, period='30m', start_time='20240101', end_time='', incrementally=True)
         # 订阅行情数据
         trader.subscribe_stocks(code_list)
         # 设置定时任务
