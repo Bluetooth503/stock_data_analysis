@@ -401,7 +401,7 @@ if __name__ == "__main__":
         trade_dates = get_trade_dates()
         
         if current_date not in trade_dates:
-            self.logger.info(f"当前日期 {current_date} 非交易日，跳过执行")
+            logger.info(f"当前日期 {current_date} 非交易日，跳过执行")
             sys.exit(0)
 
         # 设置停止时间

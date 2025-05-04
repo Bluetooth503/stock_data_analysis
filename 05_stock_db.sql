@@ -502,3 +502,34 @@ CREATE TABLE ths_limit_list (
     sum_float DOUBLE PRECISION,              -- 总市值(亿元)
     market_type TEXT NOT NULL                -- 股票类型：HS沪深主板、GEM创业板、STAR科创板
 );
+
+
+CREATE TABLE public.a_stock_qmt_sector (
+	index_name text NULL,
+	ts_code text NULL
+);
+
+CREATE TABLE public.a_index_1day_kline_baostock (
+	trade_date date NOT NULL,
+	ts_code varchar(20) NOT NULL,
+	"open" numeric(12, 4) NULL,
+	high numeric(12, 4) NULL,
+	low numeric(12, 4) NULL,
+	"close" numeric(12, 4) NULL,
+	volume numeric(20, 4) NULL,
+	amount numeric(20, 4) NULL,
+	CONSTRAINT a_index_1day_kline_baostock_tmp_pkey PRIMARY KEY (ts_code, trade_date)
+);
+
+CREATE TABLE public.a_stock_30m_kline_wfq_baostock (
+	trade_time timestamp NOT NULL,
+	ts_code varchar(20) NOT NULL,
+	"open" float8 NULL,
+	high float8 NULL,
+	low float8 NULL,
+	"close" float8 NULL,
+	volume float8 NULL,
+	amount float8 NULL,
+	adjust_flag varchar(20) NULL,
+	CONSTRAINT a_stock_30m_kline_wfq_baostock_pkey PRIMARY KEY (trade_time, ts_code)
+);

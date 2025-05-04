@@ -81,6 +81,7 @@ def get_pg_connection_string(config):
     """获取PostgreSQL连接字符串"""
     pg_config = config['postgresql']
     return f"postgresql://{pg_config['user']}:{pg_config['password']}@{pg_config['host']}:{pg_config['port']}/{pg_config['database']}"
+engine = create_engine(get_pg_connection_string(load_config()))
 
 def save_to_database(df: pd.DataFrame, table_name: str, conflict_columns: list, data_type: str = None, engine = None, update_columns: list = None) -> bool:
     """使用COPY命令高效导入数据到PostgreSQL数据库
@@ -93,6 +94,15 @@ def save_to_database(df: pd.DataFrame, table_name: str, conflict_columns: list, 
         dtype: 指定临时表字段类型的字典
         update_columns: 发生冲突时需要更新的列名列表
     """
+    def transform_column(col, df):
+        if col in ['open', 'high', 'low', 'close', 'volume', 'amount']:
+            return f'"{col}"::NUMERIC'
+        elif col == 'trade_time' and isinstance(df[col].iloc[0], int):
+            return f'TO_TIMESTAMP("{col}"::BIGINT)'
+        elif col == 'trade_date':
+            return f'"{col}"::DATE'
+        else:
+            return f'"{col}"'
     try:
         data_type = data_type or table_name
         engine = engine or create_engine(get_pg_connection_string(load_config()))
@@ -107,9 +117,9 @@ def save_to_database(df: pd.DataFrame, table_name: str, conflict_columns: list, 
                 conn.connection.cursor().copy_from(output, temp_table, sep='\t', null='')
             # 构建并执行UPSERT语句
             conflict_cols = ', '.join(f'"{col}"' for col in conflict_columns)
-            # 构建SQL语句            
+            # 使用辅助函数处理列的转换
+            select_columns = [transform_column(col, df) for col in df.columns]
             insert_columns = [f'"{col}"' for col in df.columns]
-            select_columns = [f'TO_TIMESTAMP("{col}"::BIGINT)' if col == 'trade_time' else f'"{col}"::DATE' if col == 'trade_date' else f'"{col}"' for col in df.columns]
             insert_clause = ', '.join(insert_columns)
             select_clause = ', '.join(select_columns)
             if update_columns:
@@ -126,8 +136,8 @@ def save_to_database(df: pd.DataFrame, table_name: str, conflict_columns: list, 
         return False
 
 def convert_date_format(date_str: str) -> str:
-    """将 YYYYMMDD 格式转换为 YYYY-MM-DD 格式"""
-    return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+    """将 YYYY-MM-DD 格式转换为 YYYYMMDD 格式"""
+    return date_str.replace('-', '')
 
 def format_time(time_str):
     """格式化时间字符串"""
@@ -187,8 +197,6 @@ def get_trade_dates(n=14, start_date=None, end_date=None):
     # 转换日期格式为数据库格式（YYYY-MM-DD）
     start_date = convert_date_format(start_date)
     end_date = convert_date_format(end_date)
-    # 创建数据库连接
-    engine = create_engine(get_pg_connection_string(load_config()))
     # 构建SQL查询
     sql = text("""
         SELECT trade_date::text as cal_date
@@ -202,3 +210,14 @@ def get_trade_dates(n=14, start_date=None, end_date=None):
         result = conn.execute(sql, {"start_date": start_date, "end_date": end_date})
         trade_dates = [row[0].replace('-', '') for row in result]
     return trade_dates[:n] if n else trade_dates
+
+# ================================= 判断是否为交易日 =================================
+def is_trade_date(date_str):
+    """判断是否为交易日"""
+    query = f"""
+    SELECT COUNT(1) FROM a_stock_trade_cal 
+    WHERE trade_date = '{date_str}' AND is_open = '1'
+    """
+    with engine.connect() as conn:
+        result = conn.execute(text(query)).scalar()
+    return result > 0
