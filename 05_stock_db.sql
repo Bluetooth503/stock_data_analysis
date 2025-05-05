@@ -100,22 +100,23 @@ SELECT add_compression_policy('a_stock_moneyflow', INTERVAL '2 days');
 
 
 
-CREATE TABLE "public"."a_stock_basic" (
-  "ts_code" text COLLATE "pg_catalog"."default",
-  "symbol" text COLLATE "pg_catalog"."default",
-  "name" text COLLATE "pg_catalog"."default",
-  "area" text COLLATE "pg_catalog"."default",
-  "industry" text COLLATE "pg_catalog"."default",
-  "cnspell" text COLLATE "pg_catalog"."default",
-  "market" text COLLATE "pg_catalog"."default",
-  "list_date" text COLLATE "pg_catalog"."default",
-  "act_name" text COLLATE "pg_catalog"."default",
-  "act_ent_type" text COLLATE "pg_catalog"."default",
-  CONSTRAINT "a_stock_basic_unique" UNIQUE ("ts_code")
+CREATE TABLE public.a_stock_basic (
+	ts_code text NULL,
+	symbol text NULL,
+	"name" text NULL,
+	area text NULL,
+	industry text NULL,
+	cnspell text NULL,
+	market text NULL,
+	list_date text NULL,
+	act_name text NULL,
+	act_ent_type text NULL,
+	CONSTRAINT a_stock_basic_unique UNIQUE (ts_code)
 );
-ALTER TABLE "public"."a_stock_basic" OWNER TO "postgres";
-CREATE INDEX "a_stock_basic_name_idx" ON "public"."a_stock_basic" USING btree ("name" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST);
-CREATE INDEX "a_stock_basic_ts_code_idx" ON "public"."a_stock_basic" USING btree ("ts_code" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST);
+CREATE INDEX a_stock_basic_name_idx ON public.a_stock_basic USING btree (name);
+CREATE INDEX a_stock_basic_ts_code_idx ON public.a_stock_basic USING btree (ts_code);
+
+
 
 
 CREATE TABLE "public"."a_stock_daily_k" (
