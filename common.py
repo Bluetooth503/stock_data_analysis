@@ -10,7 +10,7 @@ import argparse
 from datetime import datetime, date, timedelta, timezone
 import psycopg2
 from psycopg2 import pool
-from typing import Dict, List, Optional, Callable, Set
+from typing import Dict, List, Optional, Callable, Set, Union, Tuple
 from sqlalchemy import create_engine, text, DateTime
 from loguru import logger
 import warnings
@@ -20,7 +20,6 @@ import numpy as np
 import math
 from scipy import stats
 from tqdm import tqdm
-import pandas_ta as ta
 import talib
 from wxpusher import WxPusher
 import requests

@@ -5,6 +5,7 @@ import quantstats_lumi as qs
 import multiprocessing as mp
 import optuna
 from numba import jit, prange
+import pandas_ta as ta
 
 # ================================= 读取配置文件 =================================
 config = load_config()
@@ -25,36 +26,24 @@ N_WARMUP_STEPS = 5  # 预热步数，用于修剪机制
 
 # ================================= ha_st计算 =================================
 def ha_st_pandas_ta(df, length, multiplier):
-    '''direction=1上涨，-1下跌 - 优化版本'''
-    # 避免不必要的深拷贝
+    '''pandas-ta计算'''
     df = df.copy(deep=False)
-
-    # 确保参数类型正确
     length = int(round(length))
     multiplier = float(multiplier)
-
-    # 计算Heikin-Ashi
     df.ta.ha(append=True)
-
-    # 重命名列 - 使用更高效的方式
     ha_ohlc = {"HA_open": "ha_open", "HA_high": "ha_high", "HA_low": "ha_low", "HA_close": "ha_close"}
     df.rename(columns=ha_ohlc, inplace=True)
-
-    # 计算SuperTrend
     supertrend_df = ta.supertrend(df['ha_high'], df['ha_low'], df['ha_close'], length, multiplier)
     supert_col = f'SUPERT_{length}_{multiplier}'
     direction_col = f'SUPERTd_{length}_{multiplier}'
-
-    # 只保留必要的列，减少内存使用
     df['supertrend'] = supertrend_df[supert_col]
     df['direction'] = supertrend_df[direction_col]
-
     return df
 
-# 使用Numba加速计算日度收益率 - 优化版本
+# 使用Numba加速计算日度收益率
 @jit(nopython=True, parallel=True, fastmath=True)
 def _calculate_daily_returns_numba(dates, values):
-    """Numba加速版本的日度收益率计算 - 使用并行和快速数学优化"""
+    """Numba加速版本的日度收益率计算"""
     unique_dates = np.unique(dates)
     result = np.zeros(len(unique_dates))
 
@@ -74,38 +63,21 @@ def _calculate_daily_returns_numba(dates, values):
     return unique_dates, result
 
 # ================================= 取数 =================================
-def get_30m_kline_data(fq_code, ts_code, start_date=None, end_date=None):
-    """从PostgreSQL数据库获取股票数据，返回DataFrame - 优化版本"""
-    # 使用参数化查询防止SQL注入并提高性能
-    query = """
+def get_30m_kline_data(ts_code, start_date=None, end_date=None):
+    """从PostgreSQL数据库获取股票数据"""
+    query = f"""
         SELECT trade_time, ts_code, open, high, low, close, volume, amount
-        FROM a_stock_30m_kline_{}_baostock
-        WHERE ts_code = :ts_code
-    """.format(fq_code)
-
-    params = {'ts_code': ts_code}
-
-    # 添加日期范围条件
-    if start_date:
-        query += " AND trade_time >= :start_date"
-        params['start_date'] = start_date
-    if end_date:
-        query += " AND trade_time <= :end_date"
-        params['end_date'] = end_date
-
-    # 按日期和时间排序
-    query += " ORDER BY trade_time"
-
-    # 使用SQLAlchemy的text函数处理参数化查询
+        FROM a_stock_30m_kline_wfq_baostock
+        WHERE ts_code = '{ts_code}'
+        AND trade_time >= '{start_date}' AND trade_time <= '{end_date}'
+        ORDER BY trade_time
+    """
     with engine.connect() as conn:
-        df = pd.read_sql(text(query), conn, params=params)
-
-    # 一次性转换所有数值列，提高性能
-    numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount']
-    df[numeric_columns] = df[numeric_columns].apply(pd.to_numeric, errors='coerce')
-
+        df = pd.read_sql(query, conn)
     # 删除任何包含 NaN 的行
     df = df.dropna()
+    df['trade_time'] = pd.to_datetime(df['trade_time'])
+    df.set_index('trade_time', inplace=True)
     return df
 
 # ================================= 函数定义 =================================
@@ -146,7 +118,6 @@ def calculate_daily_returns(returns):
     """计算日度收益率"""
     returns.index = pd.to_datetime(returns.index)
 
-    # 使用Numba加速版本
     try:
         # 准备数据
         dates = np.array([d.date().toordinal() for d in returns.index])
@@ -170,7 +141,7 @@ def calculate_daily_returns(returns):
         return daily_returns
 
 def objective(trial, df):
-    """Optuna优化目标函数 - 优化版本"""
+    """Optuna优化目标函数"""
     # 从离散参数空间中选择参数
     period_idx = trial.suggest_int('period_idx', 0, len(PERIOD_RANGE)-1)
     multiplier_idx = trial.suggest_int('multiplier_idx', 0, len(MULTIPLIER_RANGE)-1)
@@ -231,16 +202,19 @@ def optimize_parameters(df):
     """使用Optuna进行参数优化"""
     # 创建修剪器 - 使用更激进的修剪策略
     pruner = optuna.pruners.HyperbandPruner(
-        min_resource=5,
+        min_resource=N_WARMUP_STEPS,
         max_resource=N_TRIALS,
-        reduction_factor=3
+        reduction_factor=5
     )
 
     # 创建学习器 - 使用更高效的采样器
     study = optuna.create_study(
         direction='maximize',
         pruner=pruner,
-        sampler=optuna.samplers.TPESampler(seed=42, n_startup_trials=N_STARTUP_TRIALS//2)
+        sampler=optuna.samplers.TPESampler(
+            seed=42, 
+            n_startup_trials=N_STARTUP_TRIALS,
+            multivariate=True)
     )
 
     study.optimize(
@@ -264,13 +238,8 @@ def optimize_stock(stock_code):
     """对单个股票进行参数优化"""
     try:
         logger.info(f'开始处理股票: {stock_code}')
-
         os.makedirs('reports', exist_ok=True)
-
-        # 获取数据
-        df = get_30m_kline_data('wfq', stock_code, START_DATE, END_DATE)
-        df['trade_time'] = pd.to_datetime(df['trade_time'])
-        df.set_index('trade_time', inplace=True)
+        df = get_30m_kline_data(stock_code, START_DATE, END_DATE)
 
         # 使用Optuna进行参数优化
         best_params, best_score = optimize_parameters(df)
@@ -281,24 +250,14 @@ def optimize_stock(stock_code):
         daily_returns.name = 'SuperTrend'
 
         # 获取基准数据
-        start_date_fmt = START_DATE.replace('-', '')
-        end_date_fmt = END_DATE.replace('-', '')
-        benchmark_sql = """
+        benchmark_sql = f"""
         SELECT trade_date as trade_time, close
         FROM a_index_1day_kline_baostock
-        WHERE ts_code = :ts_code
-        AND trade_date >= :start_date AND trade_date <= :end_date
+        WHERE ts_code = '000300.SH'
+        AND trade_date >= '{START_DATE}' AND trade_date <= '{END_DATE}'
         ORDER BY trade_date
         """
-        benchmark_df = pd.read_sql(
-            text(benchmark_sql), 
-            engine, 
-            params={
-                'ts_code': '000300.SH',
-                'start_date': start_date_fmt,
-                'end_date': end_date_fmt
-            }
-        )
+        benchmark_df = pd.read_sql(benchmark_sql, engine)
         benchmark_df['trade_time'] = pd.to_datetime(benchmark_df['trade_time'])
         benchmark_df.set_index('trade_time', inplace=True)
 
@@ -411,66 +370,57 @@ def optimize_stock(stock_code):
         logger.error(f'处理股票 {stock_code} 时发生错误: {str(e)}')
         return None
 
-def main():
+def get_stock_codes() -> list:
+    """获取需要处理的股票代码列表"""
     try:
-        # 获取股票代码 - 优化查询方式
-        try:
-            query = """
-                SELECT DISTINCT ts_code 
-                FROM a_stock_qmt_sector 
-                WHERE index_name IN ('上证50', '沪深300', '中证500', '中证1000')
-                LIMIT 2
-            """
-            with engine.connect() as conn:
-                result = conn.execute(text(query)).mappings()  # 返回字典格式
-                stock_codes = [row['ts_code'] for row in result]
-                logger.info(f'从a_stock_qmt_sector表中读取到 {len(stock_codes)} 只股票')
-        except Exception as e:
-            logger.error(f'获取股票代码失败: {str(e)}')
-            return
+        query = """
+            SELECT DISTINCT ts_code 
+            FROM a_stock_qmt_sector 
+            WHERE index_name IN ('上证50', '沪深300', '中证500', '中证1000')
+        """
+        with engine.connect() as conn:
+            result = conn.execute(text(query)).mappings()
+            return [row['ts_code'] for row in result]
+    except Exception as e:
+        logger.error(f'获取股票代码失败: {str(e)}')
+        raise
 
-        # 创建进程池
-        pool = mp.Pool(processes=MAX_PROCESSES)
 
-        # 并行处理所有股票
-        results = []
-        for result in pool.imap_unordered(optimize_stock, stock_codes):
-            if result is not None and isinstance(result, dict):
-                # 确保结果是字典类型
-                results.append(result)
-            elif result is not None:
-                logger.warning(f"跳过非字典类型的结果: {type(result)}")
+def run_parallel_processing(stock_codes: list) -> list:
+    """并行处理股票优化任务"""
+    with mp.Pool(processes=MAX_PROCESSES) as pool:
+        return [result for result in pool.imap_unordered(optimize_stock, stock_codes)
+                if isinstance(result, dict)]
 
-        # 关闭进程池
-        pool.close()
-        pool.join()
 
-        # 将结果保存到CSV
-        if results:
-            try:
-                # 创建DataFrame并保存
-                results_df = pd.DataFrame(results)
-                results_file = os.path.join('reports', 'Heikin_Ashi_SuperTrend_Metrics.csv')
-                results_df.to_csv(results_file, index=False)
-                logger.info(f'结果已保存到 {results_file}，共处理成功 {len(results)} 只股票')
-            except Exception as e:
-                logger.error(f'保存结果时发生错误: {str(e)}')
-                # 尝试保存原始数据
-                try:
-                    with open(os.path.join('reports', 'raw_results.txt'), 'w') as f:
-                        for result in results:
-                            f.write(str(result) + '\n')
-                    logger.info('已保存原始结果到 raw_results.txt')
-                except:
-                    pass
-        else:
-            logger.warning('没有成功处理任何股票')
+def save_results(results: list) -> None:
+    """保存优化结果到文件"""
+    if not results:
+        logger.warning('没有成功处理任何股票')
+        return
+
+    try:
+        results_df = pd.DataFrame(results)
+        results_file = os.path.join('reports', 'Heikin_Ashi_SuperTrend_Metrics.csv')
+        results_df.to_csv(results_file, index=False)
+        logger.info(f'结果已保存到 {results_file}，共处理成功 {len(results)} 只股票')
+    except Exception as e:
+        logger.error(f'保存结果时发生错误: {str(e)}')
+        with open(os.path.join('reports', 'raw_results.txt'), 'w') as f:
+            f.writelines(str(r) + '\n' for r in results)
+
+
+def main():
+    """主流程控制函数"""
+    try:
+        stock_codes = get_stock_codes()
+        logger.info(f'从a_stock_qmt_sector表中读取到 {len(stock_codes)} 只股票')
+        
+        results = run_parallel_processing(stock_codes)
+        save_results(results)
 
     except Exception as e:
         logger.error(f'处理过程中发生错误: {str(e)}')
-        if 'pool' in locals():
-            pool.close()
-            pool.join()
 
 if __name__ == '__main__':
     main()

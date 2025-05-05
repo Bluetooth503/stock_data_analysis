@@ -11,74 +11,19 @@ xtdata.enable_hello = False
 logger = setup_logger()
 
 # ================================= Heikin-Ashi SuperTrend 计算 =================================
-def ha_st_pine(df, length, multiplier):
-    '''Heikin Ashi计算:direction=1上涨,-1下跌.'''
-    df = df.copy()
-    # 使用向量化操作计算HA价格
-    ha_close = (df['open'] + df['high'] + df['low'] + df['close']) / 4
-    # 使用向量化操作计算HA开盘价
-    ha_open = pd.Series(index=df.index, dtype=float)
-    ha_open.iloc[0] = (df['open'].iloc[0] + df['close'].iloc[0]) / 2
-    # 使用向量化操作计算HA高低价
-    ha_high = pd.Series(index=df.index, dtype=float)
-    ha_low = pd.Series(index=df.index, dtype=float)
-    # 使用cumsum和shift进行向量化计算
-    for i in range(1, len(df)):
-        ha_open.iloc[i] = (ha_open.iloc[i-1] + ha_close.iloc[i-1]) / 2
-    # 向量化计算HA高低价
-    ha_high = df[['high']].join(pd.DataFrame({
-        'ha_open': ha_open,
-        'ha_close': ha_close
-    })).max(axis=1)
-    ha_low = df[['low']].join(pd.DataFrame({
-        'ha_open': ha_open,
-        'ha_close': ha_close
-    })).min(axis=1)
-    # 使用向量化操作计算TR
-    tr1 = ha_high - ha_low
-    tr2 = (ha_high - ha_close.shift(1)).abs()
-    tr3 = (ha_low - ha_close.shift(1)).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    # 使用向量化操作计算RMA
-    rma = pd.Series(index=df.index, dtype=float)
-    alpha = 1.0 / length
-    # 初始化RMA
-    rma.iloc[length-1] = tr.iloc[:length].mean()
-    # 使用向量化操作计算RMA
-    for i in range(length, len(df)):
-        rma.iloc[i] = alpha * tr.iloc[i] + (1 - alpha) * rma.iloc[i-1]
-    # SuperTrend计算
-    src = (ha_high + ha_low) / 2
-    upper_band = pd.Series(index=df.index, dtype=float)
-    lower_band = pd.Series(index=df.index, dtype=float)
-    super_trend = pd.Series(index=df.index, dtype=float)
-    direction = pd.Series(0, index=df.index)
-    # 初始化第一个有效值
-    start_idx = length - 1
-    upper_band.iloc[start_idx] = src.iloc[start_idx] + multiplier * rma.iloc[start_idx]
-    lower_band.iloc[start_idx] = src.iloc[start_idx] - multiplier * rma.iloc[start_idx]
-    super_trend.iloc[start_idx] = upper_band.iloc[start_idx]
-    direction.iloc[start_idx] = 1
-    # 使用向量化操作计算SuperTrend
-    for i in range(start_idx+1, len(df)):
-        current_upper = src.iloc[i] + multiplier * rma.iloc[i]
-        current_lower = src.iloc[i] - multiplier * rma.iloc[i]
-        lower_band.iloc[i] = current_lower if (current_lower > lower_band.iloc[i-1] or ha_close.iloc[i-1] < lower_band.iloc[i-1]) else lower_band.iloc[i-1]
-        upper_band.iloc[i] = current_upper if (current_upper < upper_band.iloc[i-1] or ha_close.iloc[i-1] > upper_band.iloc[i-1]) else upper_band.iloc[i-1]
-        if i == start_idx or pd.isna(rma.iloc[i-1]):
-            direction.iloc[i] = -1
-        elif super_trend.iloc[i-1] == upper_band.iloc[i-1]:
-            direction.iloc[i] = 1 if ha_close.iloc[i] > upper_band.iloc[i] else -1
-        else:
-            direction.iloc[i] = -1 if ha_close.iloc[i] < lower_band.iloc[i] else 1
-        super_trend.iloc[i] = lower_band.iloc[i] if direction.iloc[i] == 1 else upper_band.iloc[i]
-    # 将计算结果添加到DataFrame中
-    df['ha_open'] = ha_open
-    df['ha_high'] = ha_high
-    df['ha_low'] = ha_low
-    df['ha_close'] = ha_close
-    df['supertrend'] = super_trend
-    df['direction'] = direction
+def ha_st_pandas_ta(df, length, multiplier):
+    '''pandas-ta计算'''
+    df = df.copy(deep=False)
+    length = int(round(length))
+    multiplier = float(multiplier)
+    df.ta.ha(append=True)
+    ha_ohlc = {"HA_open": "ha_open", "HA_high": "ha_high", "HA_low": "ha_low", "HA_close": "ha_close"}
+    df.rename(columns=ha_ohlc, inplace=True)
+    supertrend_df = ta.supertrend(df['ha_high'], df['ha_low'], df['ha_close'], length, multiplier)
+    supert_col = f'SUPERT_{length}_{multiplier}'
+    direction_col = f'SUPERTd_{length}_{multiplier}'
+    df['supertrend'] = supertrend_df[supert_col]
+    df['direction'] = supertrend_df[direction_col]
     return df
 
 # ================================= Heikin-Ashi SuperTrend 信号判断 =================================
@@ -284,12 +229,9 @@ def calculate_signals(args):
     current_time = datetime.now().strftime('%H%M')
     stock_data['ts_code'] = code
     stock_data['trade_time'] = pd.to_datetime(stock_data['time'].apply(lambda x: datetime.fromtimestamp(x / 1000.0)))
+    stock_data = ha_st_pandas_ta(stock_data, stock_params['period'], stock_params['multiplier'])
     # 开盘和收盘前特殊时段使用未完成K线
-    if current_time in ['0935', '1455']:
-        stock_data = ha_st_pine(stock_data, stock_params['period'], stock_params['multiplier'])
-    else:
-        stock_data = ha_st_pine(stock_data, stock_params['period'], stock_params['multiplier'])
-        # 其他时间去掉最后一根未完成的K线
+    if current_time not in ['0935', '1455']:
         stock_data = stock_data.iloc[:-1]
     signal = check_signal_change(stock_data)
     if signal:
@@ -355,7 +297,7 @@ def check_positions():
         stock_data = df[code].copy()
         # stock_data.to_csv(f"{code}_debug.csv")
         stock_data['trade_time'] = pd.to_datetime(stock_data['time'].apply(lambda x: datetime.fromtimestamp(x / 1000.0)))
-        stock_data = ha_st_pine(stock_data, stock_params['period'], stock_params['multiplier'])
+        stock_data = ha_st_pandas_ta(stock_data, stock_params['period'], stock_params['multiplier'])
         # 如果最新方向为下跌
         if stock_data['direction'].iloc[-1] == -1:
             warning_stocks.append(f"{stock_params['name']}({code})")

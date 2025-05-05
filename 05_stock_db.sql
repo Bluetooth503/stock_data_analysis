@@ -1,28 +1,27 @@
-CREATE TABLE "public"."a_stock_daily_basic" (
-  "ts_code" varchar(20) COLLATE "pg_catalog"."default" NOT NULL,
-  "trade_date" varchar(10) COLLATE "pg_catalog"."default" NOT NULL,
-  "close" numeric(18,2) NOT NULL,
-  "turnover_rate" numeric(10,4),
-  "turnover_rate_f" numeric(10,4),
-  "volume_ratio" numeric(10,4),
-  "pe" numeric(18,2),
-  "pe_ttm" numeric(18,2),
-  "pb" numeric(18,2),
-  "ps" numeric(18,2),
-  "ps_ttm" numeric(18,2),
-  "dv_ratio" numeric(10,4),
-  "dv_ttm" numeric(10,4),
-  "total_share" numeric(18,2),
-  "float_share" numeric(18,2),
-  "free_share" numeric(18,2),
-  "total_mv" numeric(18,2),
-  "circ_mv" numeric(18,2),
-  "circ_mv_range" varchar COLLATE "pg_catalog"."default",
-  CONSTRAINT "a_stock_daily_basic_pkey" PRIMARY KEY ("ts_code", "trade_date")
+CREATE TABLE public.a_stock_daily_basic (
+	trade_date date NOT NULL,
+	ts_code text NOT NULL,
+	"close" numeric(18, 2) NULL,
+	turnover_rate numeric(10, 4) NULL,
+	turnover_rate_f numeric(10, 4) NULL,
+	volume_ratio numeric(10, 4) NULL,
+	pe numeric(18, 2) NULL,
+	pe_ttm numeric(18, 2) NULL,
+	pb numeric(18, 2) NULL,
+	ps numeric(18, 2) NULL,
+	ps_ttm numeric(18, 2) NULL,
+	dv_ratio numeric(10, 4) NULL,
+	dv_ttm numeric(10, 4) NULL,
+	total_share numeric(18, 2) NULL,
+	float_share numeric(18, 2) NULL,
+	free_share numeric(18, 2) NULL,
+	total_mv numeric(18, 2) NULL,
+	circ_mv numeric(18, 2) NULL,
+	circ_mv_range text NULL,
+	CONSTRAINT a_stock_daily_basic_unique UNIQUE (trade_date, ts_code)
 );
-ALTER TABLE "public"."a_stock_daily_basic" OWNER TO "postgres";
-CREATE INDEX "idx_trade_date_d6vi7" ON "public"."a_stock_daily_basic" USING btree ("trade_date" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST);
-CREATE INDEX "idx_ts_code_d6vi7" ON "public"."a_stock_daily_basic" USING btree ("ts_code" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST);
+CREATE INDEX a_stock_daily_basic_trade_date_idx ON public.a_stock_daily_basic USING btree (trade_date);
+CREATE INDEX a_stock_daily_basic_ts_code_idx ON public.a_stock_daily_basic USING btree (ts_code);
 COMMENT ON COLUMN "public"."a_stock_daily_basic"."ts_code" IS 'TS股票代码';
 COMMENT ON COLUMN "public"."a_stock_daily_basic"."trade_date" IS '交易日期';
 COMMENT ON COLUMN "public"."a_stock_daily_basic"."close" IS '当日收盘价';
@@ -43,6 +42,61 @@ COMMENT ON COLUMN "public"."a_stock_daily_basic"."total_mv" IS '总市值(万元
 COMMENT ON COLUMN "public"."a_stock_daily_basic"."circ_mv" IS '流通市值(万元)';
 COMMENT ON COLUMN "public"."a_stock_daily_basic"."circ_mv_range" IS '流通市值区间';
 COMMENT ON TABLE "public"."a_stock_daily_basic" IS 'A股每日基础数据表';
+SELECT create_hypertable('a_stock_daily_basic', 'trade_date', migrate_data => true);
+ALTER TABLE a_stock_daily_basic SET (timescaledb.compress, timescaledb.compress_segmentby = 'ts_code');
+SELECT add_compression_policy('a_stock_daily_basic', INTERVAL '2 days');
+
+
+
+CREATE TABLE public.a_stock_moneyflow (
+	trade_date date NOT NULL,
+	ts_code text NOT NULL,
+	buy_sm_vol int4 NULL,
+	buy_sm_amount numeric(18, 2) NULL,
+	sell_sm_vol int4 NULL,
+	sell_sm_amount numeric(18, 2) NULL,
+	buy_md_vol int4 NULL,
+	buy_md_amount numeric(18, 2) NULL,
+	sell_md_vol int4 NULL,
+	sell_md_amount numeric(18, 2) NULL,
+	buy_lg_vol int4 NULL,
+	buy_lg_amount numeric(18, 2) NULL,
+	sell_lg_vol int4 NULL,
+	sell_lg_amount numeric(18, 2) NULL,
+	buy_elg_vol int4 NULL,
+	buy_elg_amount numeric(18, 2) NULL,
+	sell_elg_vol int4 NULL,
+	sell_elg_amount numeric(18, 2) NULL,
+	net_mf_vol int4 NULL,
+	net_mf_amount numeric(18, 2) NULL,
+	CONSTRAINT a_stock_moneyflow_unique UNIQUE (trade_date, ts_code)
+);
+CREATE INDEX a_stock_moneyflow_trade_date_idx ON public.a_stock_moneyflow USING btree (trade_date);
+CREATE INDEX a_stock_moneyflow_ts_code_idx ON public.a_stock_moneyflow USING btree (ts_code);
+COMMENT ON COLUMN "public"."a_stock_moneyflow"."ts_code" IS 'TS代码';
+COMMENT ON COLUMN "public"."a_stock_moneyflow"."trade_date" IS '交易日期';
+COMMENT ON COLUMN "public"."a_stock_moneyflow"."buy_sm_vol" IS '小单买入量(手)';
+COMMENT ON COLUMN "public"."a_stock_moneyflow"."buy_sm_amount" IS '小单买入金额(万元)';
+COMMENT ON COLUMN "public"."a_stock_moneyflow"."sell_sm_vol" IS '小单卖出量(手)';
+COMMENT ON COLUMN "public"."a_stock_moneyflow"."sell_sm_amount" IS '小单卖出金额(万元)';
+COMMENT ON COLUMN "public"."a_stock_moneyflow"."buy_md_vol" IS '中单买入量(手)';
+COMMENT ON COLUMN "public"."a_stock_moneyflow"."buy_md_amount" IS '中单买入金额(万元)';
+COMMENT ON COLUMN "public"."a_stock_moneyflow"."sell_md_vol" IS '中单卖出量(手)';
+COMMENT ON COLUMN "public"."a_stock_moneyflow"."sell_md_amount" IS '中单卖出金额(万元)';
+COMMENT ON COLUMN "public"."a_stock_moneyflow"."buy_lg_vol" IS '大单买入量(手)';
+COMMENT ON COLUMN "public"."a_stock_moneyflow"."buy_lg_amount" IS '大单买入金额(万元)';
+COMMENT ON COLUMN "public"."a_stock_moneyflow"."sell_lg_vol" IS '大单卖出量(手)';
+COMMENT ON COLUMN "public"."a_stock_moneyflow"."sell_lg_amount" IS '大单卖出金额(万元)';
+COMMENT ON COLUMN "public"."a_stock_moneyflow"."buy_elg_vol" IS '特大单买入量(手)';
+COMMENT ON COLUMN "public"."a_stock_moneyflow"."buy_elg_amount" IS '特大单买入金额(万元)';
+COMMENT ON COLUMN "public"."a_stock_moneyflow"."sell_elg_vol" IS '特大单卖出量(手)';
+COMMENT ON COLUMN "public"."a_stock_moneyflow"."sell_elg_amount" IS '特大单卖出金额(万元)';
+COMMENT ON COLUMN "public"."a_stock_moneyflow"."net_mf_vol" IS '净流入量(手)';
+COMMENT ON COLUMN "public"."a_stock_moneyflow"."net_mf_amount" IS '净流入额(万元)';
+COMMENT ON TABLE "public"."a_stock_moneyflow" IS 'A股资金流向表。小单：5万以下 中单：5万～20万 大单：20万～100万 特大单：成交额>=100万 ，数据基于主动买卖单统计';
+SELECT create_hypertable('a_stock_moneyflow', 'trade_date', migrate_data => true);
+ALTER TABLE a_stock_moneyflow SET (timescaledb.compress, timescaledb.compress_segmentby = 'ts_code');
+SELECT add_compression_policy('a_stock_moneyflow', INTERVAL '2 days');
 
 
 
@@ -169,53 +223,6 @@ COMMENT ON COLUMN "public"."a_stock_market_moneyflow_score"."净值分位数" IS
 COMMENT ON TABLE "public"."a_stock_market_moneyflow_score" IS 'A股市场资金流动得分表';
 
 
-CREATE TABLE "public"."a_stock_moneyflow" (
-  "ts_code" varchar(20) COLLATE "pg_catalog"."default" NOT NULL,
-  "trade_date" varchar(10) COLLATE "pg_catalog"."default" NOT NULL,
-  "buy_sm_vol" int4,
-  "buy_sm_amount" numeric(18,2),
-  "sell_sm_vol" int4,
-  "sell_sm_amount" numeric(18,2),
-  "buy_md_vol" int4,
-  "buy_md_amount" numeric(18,2),
-  "sell_md_vol" int4,
-  "sell_md_amount" numeric(18,2),
-  "buy_lg_vol" int4,
-  "buy_lg_amount" numeric(18,2),
-  "sell_lg_vol" int4,
-  "sell_lg_amount" numeric(18,2),
-  "buy_elg_vol" int4,
-  "buy_elg_amount" numeric(18,2),
-  "sell_elg_vol" int4,
-  "sell_elg_amount" numeric(18,2),
-  "net_mf_vol" int4,
-  "net_mf_amount" numeric(18,2),
-  CONSTRAINT "a_stock_moneyflow_pkey" PRIMARY KEY ("ts_code", "trade_date")
-);
-ALTER TABLE "public"."a_stock_moneyflow" OWNER TO "postgres";
-CREATE INDEX "idx_trade_date" ON "public"."a_stock_moneyflow" USING btree ("trade_date" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST);
-CREATE INDEX "idx_ts_code" ON "public"."a_stock_moneyflow" USING btree ("ts_code" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST);
-COMMENT ON COLUMN "public"."a_stock_moneyflow"."ts_code" IS 'TS代码';
-COMMENT ON COLUMN "public"."a_stock_moneyflow"."trade_date" IS '交易日期';
-COMMENT ON COLUMN "public"."a_stock_moneyflow"."buy_sm_vol" IS '小单买入量(手)';
-COMMENT ON COLUMN "public"."a_stock_moneyflow"."buy_sm_amount" IS '小单买入金额(万元)';
-COMMENT ON COLUMN "public"."a_stock_moneyflow"."sell_sm_vol" IS '小单卖出量(手)';
-COMMENT ON COLUMN "public"."a_stock_moneyflow"."sell_sm_amount" IS '小单卖出金额(万元)';
-COMMENT ON COLUMN "public"."a_stock_moneyflow"."buy_md_vol" IS '中单买入量(手)';
-COMMENT ON COLUMN "public"."a_stock_moneyflow"."buy_md_amount" IS '中单买入金额(万元)';
-COMMENT ON COLUMN "public"."a_stock_moneyflow"."sell_md_vol" IS '中单卖出量(手)';
-COMMENT ON COLUMN "public"."a_stock_moneyflow"."sell_md_amount" IS '中单卖出金额(万元)';
-COMMENT ON COLUMN "public"."a_stock_moneyflow"."buy_lg_vol" IS '大单买入量(手)';
-COMMENT ON COLUMN "public"."a_stock_moneyflow"."buy_lg_amount" IS '大单买入金额(万元)';
-COMMENT ON COLUMN "public"."a_stock_moneyflow"."sell_lg_vol" IS '大单卖出量(手)';
-COMMENT ON COLUMN "public"."a_stock_moneyflow"."sell_lg_amount" IS '大单卖出金额(万元)';
-COMMENT ON COLUMN "public"."a_stock_moneyflow"."buy_elg_vol" IS '特大单买入量(手)';
-COMMENT ON COLUMN "public"."a_stock_moneyflow"."buy_elg_amount" IS '特大单买入金额(万元)';
-COMMENT ON COLUMN "public"."a_stock_moneyflow"."sell_elg_vol" IS '特大单卖出量(手)';
-COMMENT ON COLUMN "public"."a_stock_moneyflow"."sell_elg_amount" IS '特大单卖出金额(万元)';
-COMMENT ON COLUMN "public"."a_stock_moneyflow"."net_mf_vol" IS '净流入量(手)';
-COMMENT ON COLUMN "public"."a_stock_moneyflow"."net_mf_amount" IS '净流入额(万元)';
-COMMENT ON TABLE "public"."a_stock_moneyflow" IS 'A股资金流向表。小单：5万以下 中单：5万～20万 大单：20万～100万 特大单：成交额>=100万 ，数据基于主动买卖单统计';
 
 
 CREATE TABLE "public"."a_stock_moneyflow_industry_score" (
@@ -343,10 +350,6 @@ CREATE TABLE "public"."a_stock_5m_kline_wfq_baostock" (
   "adjust_flag" int4,
   CONSTRAINT "a_stock_5m_kline_wfq_baostock_pkey" PRIMARY KEY ("trade_time", "ts_code")
 );
-ALTER TABLE "public"."a_stock_5m_kline_wfq_baostock" OWNER TO "postgres";
-CREATE INDEX "a_stock_5m_kline_wfq_baostock_trade_time_idx" ON "public"."a_stock_5m_kline_wfq_baostock" USING btree ("trade_time" "pg_catalog"."timestamp_ops" ASC NULLS LAST);
-CREATE INDEX "idx_5m_kline_wfq_baostock_ts_code" ON "public"."a_stock_5m_kline_wfq_baostock" USING btree ("ts_code" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST);
-
 
 
 -- IMMUTABLE函数,timestamptz转日期
@@ -436,40 +439,6 @@ CREATE TABLE public.ods_a_stock_level1_data (
 	ask_volume5 int8 NULL,
 	CONSTRAINT ods_a_stock_level1_data_unique UNIQUE (ts_code, trade_time)
 );
-CREATE INDEX ods_a_stock_level1_data_trade_time_idx ON public.ods_a_stock_level1_data USING btree (trade_time);
-CREATE INDEX ods_a_stock_level1_data_ts_code_idx ON public.ods_a_stock_level1_data USING btree (ts_code);
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ts_code" IS '证券代码';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."trade_time" IS '交易时间(含时区)';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."last_price" IS '最新成交价';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."open" IS '开盘价';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."high" IS '最高价';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."low" IS '最低价';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."pre_close" IS '前收盘价';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."volume" IS '成交量(手)';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."amount" IS '成交金额';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."pvolume" IS '原始成交总量(未经过股手转换)';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."transaction_num" IS '成交笔数';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."bid_price1" IS '买一价';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."bid_volume1" IS '买一量';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."bid_price2" IS '买二价';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."bid_volume2" IS '买二量';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."bid_price3" IS '买三价';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."bid_volume3" IS '买三量';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."bid_price4" IS '买四价';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."bid_volume4" IS '买四量';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."bid_price5" IS '买五价';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."bid_volume5" IS '买五量';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_price1" IS '卖一价';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_volume1" IS '卖一量';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_price2" IS '卖二价';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_volume2" IS '卖二量';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_price3" IS '卖三价';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_volume3" IS '卖三量';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_price4" IS '卖四价';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_volume4" IS '卖四量';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_price5" IS '卖五价';
-COMMENT ON COLUMN "public"."ods_a_stock_level1_data"."ask_volume5" IS '卖五量';
-COMMENT ON TABLE "public"."ods_a_stock_level1_data" IS 'A股Level1快照历史数据';
 SELECT create_hypertable('ods_a_stock_level1_data', 'trade_time', migrate_data => true);
 ALTER TABLE ods_a_stock_level1_data SET (timescaledb.compress,timescaledb.compress_segmentby = 'ts_code');
 SELECT add_compression_policy('ods_a_stock_level1_data', INTERVAL '3 days');

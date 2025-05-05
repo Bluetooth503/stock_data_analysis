@@ -114,7 +114,6 @@ def download_and_store_data(engine, stocks, start_date, end_date, batch_size=100
                 update_columns=['open', 'high', 'low', 'close', 'volume', 'amount', 'adjust_flag']
             ):
                 logger.info(f"批次 {i // batch_size + 1} 数据保存完成")
-                time.sleep(5)
             else:
                 logger.error(f"批次 {i // batch_size + 1} 数据保存失败")
 

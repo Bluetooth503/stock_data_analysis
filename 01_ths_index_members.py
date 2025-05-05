@@ -1,10 +1,15 @@
 # -*- coding: utf-8 -*-
 from common import *
+import tushare as ts
 
 # ================================= 初始化日志和配置 =================================
 logger = setup_logger()
 config = load_config()
 engine = create_engine(get_pg_connection_string(config))
+
+# ================================= tushare配置 =================================
+token = config.get('tushare', 'token')
+pro = ts.pro_api(token)
 
 # ================================= 概念指数,行业指数成分股 =================================
 def get_ths_index_members():
