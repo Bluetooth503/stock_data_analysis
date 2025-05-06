@@ -50,7 +50,7 @@ df_ta['trade_time'] = pd.to_datetime(df_ta['time'].apply(lambda x: datetime.from
 df_ta = ha_st_pandas_ta(df_ta, length=df_parm['period'].iloc[0], multiplier=df_parm['multiplier'].iloc[0])
 df_ta['ts_code'] = ts_code
 df_ta = df_ta.round(3)
-print(df_ta[['trade_time','ts_code','direction','open','high','low','close','ha_close','supertrend']].tail(32))
+print(df_ta[['trade_time','ts_code','direction','open','high','low','close','ha_close','supertrend']].tail(40))
 elapsed_time = time.time() - start_time
 print(f'[pandas_ta] 代码段执行耗时: {elapsed_time:.2f}秒')
 print('shape: ', df_ta.shape)

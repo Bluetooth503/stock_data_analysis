@@ -98,44 +98,39 @@ def wait_for_data(check_date):
 
 
 def main(): 
-    try:
-        # 解析命令行参数
-        args = parse_arguments()
-        
-        # 设置日期范围
-        current_date = datetime.today().strftime('%Y-%m-%d')
-        start_date = args.start_date if args.start_date else current_date
-        end_date = args.end_date if args.end_date else current_date
-        
+    # 解析命令行参数
+    args = parse_arguments()
+    
+    # 设置日期范围
+    if args.start_date and args.end_date:
+        start_date = datetime.strptime(args.start_date, '%Y-%m-%d')
+        end_date = datetime.strptime(args.end_date, '%Y-%m-%d')
+    else:
+        start_date = end_date = datetime.today().strftime('%Y-%m-%d')
         # 验证日期是否为交易日
         if not is_trade_date(end_date):
             logger.warning(f"{end_date} 不是交易日，程序退出")
             return
-        
-        # 当使用当天日期时触发等待流程
-        if end_date == current_date:
-            if not wait_for_data(current_date):
-                return
-        
-        # 登录并获取数据
-        bs.login()
-        df = get_index_data(index_code, start_date, end_date)
-        
-        if not df.empty:
-            # 使用 save_to_database 保存到数据库
-            save_to_database(
-                df=df,
-                table_name=table_name,
-                conflict_columns=['ts_code', 'trade_date'],
-                data_type='指数日K线',
-                engine=engine
-            )
-        else:
-            logger.warning("没有获取到数据")
-            
-    except Exception as e:
-        logger.error(f"程序执行出错: {str(e)}")
-        raise
 
+        # 当使用当天日期时触发等待流程
+        bs.login()
+        if not wait_for_data(end_date):
+            logger.error("重试耗尽，退出程序")
+            return
+    
+    df = get_index_data(index_code, start_date, end_date)
+    
+    if not df.empty:
+        # 使用 save_to_database 保存到数据库
+        save_to_database(
+            df=df,
+            table_name=table_name,
+            conflict_columns=['ts_code', 'trade_date'],
+            data_type='指数日K线',
+            engine=engine
+        )
+    else:
+        logger.warning("没有获取到数据")
+            
 if __name__ == '__main__':
     main()

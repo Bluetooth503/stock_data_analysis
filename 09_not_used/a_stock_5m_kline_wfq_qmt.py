@@ -1,17 +1,34 @@
 # -*- coding: utf-8 -*-
-"""
-A股5分钟K线数据下载与处理模块 (前复权QMT版本)
-
-该模块负责从QMT接口下载A股5分钟K线数据，并将数据处理后存入PostgreSQL数据库。
-主要功能包括：
-1. 并行下载股票历史数据
-2. 数据清洗和标准化
-3. 批量写入数据库
-"""
-
 from common import *
-from xtquant import xtdata
 from multiprocessing import Pool
+from xtquant import xtdata
+
+# ================================= 配置日志 =================================
+logger = setup_logger()
+
+
+def upsert_data(df: pd.DataFrame, table_name: str, temp_table: str, insert_sql: str, engine) -> None:
+    """使用临时表进行批量更新"""
+    with engine.begin() as conn:
+        if engine.url.drivername.startswith('postgresql'):
+            from io import StringIO
+            import csv
+            logger.info(f'开始导入数据到 {temp_table}')
+            df.head(0).to_sql(temp_table, conn, if_exists='replace', index=False)
+            output = StringIO()
+            df.to_csv(output, sep='\t', header=False, index=False, quoting=csv.QUOTE_MINIMAL)
+            output.seek(0)
+            cur = conn.connection.cursor()
+            cur.copy_from(output, temp_table, sep='\t', null='')
+        else:
+            chunk_size = 100000  # 每批处理的行数
+            total_rows = len(df)
+            for i in tqdm(range(0, total_rows, chunk_size), desc="导入进度"):
+                chunk_df = df.iloc[i:i + chunk_size]
+                chunk_df.to_sql(temp_table, conn, if_exists='append' if i > 0 else 'replace', index=False, method='multi')
+        conn.execute(text(insert_sql))
+        conn.execute(text(f"DROP TABLE IF EXISTS {temp_table}"))
+
 
 
 def init_worker():
@@ -21,12 +38,13 @@ def init_worker():
 class StockDataConfig:
     """配置类，集中管理所有配置参数"""
     def __init__(self):
+        self.config = load_config()
         self.stock_list = xtdata.get_stock_list_in_sector('沪深A股')
         self.start_time = '20000101'
         self.end_time = datetime.today().strftime('%Y%m%d')
         self.period = '5m'
         self.table_name = 'a_stock_5m_kline_wfq_qmt'
-        self.path = r'E:\国金证券QMT交易端\userdata_mini'
+        self.path: self.config.get('qmt', 'path')
         self.n_processes = 10
         self.chunk_size = 50
         self.batch_size = 100

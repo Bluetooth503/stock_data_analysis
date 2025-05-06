@@ -92,16 +92,19 @@ def save_to_database(df: pd.DataFrame, table_name: str, conflict_columns: list, 
         engine: SQLAlchemy引擎实例
         dtype: 指定临时表字段类型的字典
         update_columns: 发生冲突时需要更新的列名列表
-    """
+    """    
     def transform_column(col, df):
         if col in ['open', 'high', 'low', 'close', 'volume', 'amount']:
             return f'"{col}"::NUMERIC'
-        elif col == 'trade_time' and isinstance(df[col].iloc[0], int):
-            return f'TO_TIMESTAMP("{col}"::BIGINT)'
+        elif col == 'trade_time':
+            if df[col].dtype.kind in 'iu':  # i表示整数，u表示无符号整数
+                return f'TO_TIMESTAMP("{col}"::BIGINT)'
+            return f'"{col}"'
         elif col == 'trade_date':
             return f'"{col}"::DATE'
         else:
             return f'"{col}"'
+
     try:
         data_type = data_type or table_name
         engine = engine or create_engine(get_pg_connection_string(load_config()))
@@ -188,17 +191,11 @@ def retry_on_failure(max_retries=3, delay=1):
     return decorator
 
 # ================================= 获取最近n个交易日 =================================
-def get_trade_dates(n=14, start_date=None, end_date=None):
+def get_trade_dates(start_date, end_date):
     """获取交易日列表"""
-    if not start_date or not end_date:
-        end_date = datetime.now().strftime('%Y%m%d')
-        start_date = (datetime.strptime(end_date, '%Y%m%d') - timedelta(days=60)).strftime('%Y%m%d')
-    # 转换日期格式为数据库格式（YYYY-MM-DD）
-    start_date = convert_date_format(start_date)
-    end_date = convert_date_format(end_date)
     # 构建SQL查询
     sql = text("""
-        SELECT trade_date::text as cal_date
+        SELECT trade_date::text
         FROM a_stock_trade_cal
         WHERE trade_date BETWEEN :start_date AND :end_date
         AND is_open = '1'
@@ -207,12 +204,16 @@ def get_trade_dates(n=14, start_date=None, end_date=None):
     # 执行查询
     with engine.connect() as conn:
         result = conn.execute(sql, {"start_date": start_date, "end_date": end_date})
-        trade_dates = [row[0].replace('-', '') for row in result]
-    return trade_dates[:n] if n else trade_dates
+        trade_dates = [row[0] for row in result]
+    return trade_dates
 
 # ================================= 判断是否为交易日 =================================
 def is_trade_date(date_str):
     """判断是否为交易日"""
+    # 如果是YYYYMMDD格式，转换为YYYY-MM-DD格式
+    if len(date_str) == 8 and date_str.isdigit():
+        date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+    
     query = f"""
     SELECT COUNT(1) FROM a_stock_trade_cal 
     WHERE trade_date = '{date_str}' AND is_open = '1'

@@ -1,3 +1,22 @@
+CREATE TABLE public.a_stock_30m_kline_wfq_baostock (
+	trade_time timestamp NOT NULL,
+	ts_code text NOT NULL,
+	"open" float8 NULL,
+	high float8 NULL,
+	low float8 NULL,
+	"close" float8 NULL,
+	volume float8 NULL,
+	amount float8 NULL,
+	adjust_flag text NULL,
+	CONSTRAINT a_stock_30m_kline_wfq_baostock_pkey PRIMARY KEY (trade_time, ts_code)
+);
+CREATE INDEX a_stock_30m_kline_wfq_baostock_trade_time_idx ON public.a_stock_30m_kline_wfq_baostock USING btree (trade_time);
+CREATE INDEX idx_30m_kline_wfq_baostock_ts_code ON public.a_stock_30m_kline_wfq_baostock USING btree (ts_code);
+SELECT create_hypertable('a_stock_30m_kline_wfq_baostock', 'trade_time', migrate_data => true);
+ALTER TABLE a_stock_30m_kline_wfq_baostock SET (timescaledb.compress, timescaledb.compress_segmentby = 'ts_code');
+SELECT add_compression_policy('a_stock_30m_kline_wfq_baostock', INTERVAL '2 days');
+
+
 CREATE TABLE public.a_stock_daily_basic (
 	trade_date date NOT NULL,
 	ts_code text NOT NULL,
@@ -97,7 +116,6 @@ COMMENT ON TABLE "public"."a_stock_moneyflow" IS 'A股资金流向表。小单�
 SELECT create_hypertable('a_stock_moneyflow', 'trade_date', migrate_data => true);
 ALTER TABLE a_stock_moneyflow SET (timescaledb.compress, timescaledb.compress_segmentby = 'ts_code');
 SELECT add_compression_policy('a_stock_moneyflow', INTERVAL '2 days');
-
 
 
 CREATE TABLE public.a_stock_basic (
@@ -491,15 +509,5 @@ CREATE TABLE public.a_index_1day_kline_baostock (
 	CONSTRAINT a_index_1day_kline_baostock_tmp_pkey PRIMARY KEY (ts_code, trade_date)
 );
 
-CREATE TABLE public.a_stock_30m_kline_wfq_baostock (
-	trade_time timestamp NOT NULL,
-	ts_code varchar(20) NOT NULL,
-	"open" float8 NULL,
-	high float8 NULL,
-	low float8 NULL,
-	"close" float8 NULL,
-	volume float8 NULL,
-	amount float8 NULL,
-	adjust_flag varchar(20) NULL,
-	CONSTRAINT a_stock_30m_kline_wfq_baostock_pkey PRIMARY KEY (trade_time, ts_code)
-);
+
+

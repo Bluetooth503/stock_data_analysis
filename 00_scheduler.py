@@ -69,9 +69,11 @@ schedule.every().day.at("00:00").do(task_manager.reset_daily)
 schedule.every().day.at("09:00").do(run_script, "01_a_stock_level1_data.py")
 schedule.every().day.at("09:00").do(run_script, "04_qmt_monitor_ha_st_30m.py")
 schedule.every().day.at("16:30").do(run_script, "01_ods_a_stock_level1_data.py")
-schedule.every().day.at("16:30").do(run_script, "01_a_stock_30m_kline_wfq_baostock.py")
-schedule.every().day.at("16:35").do(run_script, "01_a_index_1day_kline_baostock.py")
 schedule.every().day.at("16:40").do(run_script, "01_a_stock_daily_basic.py")
+schedule.every().day.at("16:50").do(run_script, "01_ths_limit_list.py")
+schedule.every().day.at("18:00").do(run_script, "01_a_stock_30m_kline_wfq_baostock.py")
+schedule.every().day.at("19:00").do(run_script, "01_a_index_1day_kline_baostock.py")
+
 
 # ================================= 周任务 =================================
 schedule.every().saturday.at("02:00").do(run_script, "01_ths_index_members.py")

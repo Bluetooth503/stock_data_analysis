@@ -132,29 +132,31 @@ def download_and_save_level1_data(start_date: str, end_date: str) -> None:
             logger.info(f"处理第 {i//batch_size + 1} 批股票数据 ({i+1} - {min(i+batch_size, len(stocks))})")  # 添加批次信息
             download_batch_stock_data(stock_batch, date)
 
-# ================================= 命令行参数解析 =================================
-def parse_args():
+# ================================= 解析命令行参数 =================================
+def parse_arguments():
+    """解析命令行参数"""
     parser = argparse.ArgumentParser(description='股票Level1数据下载工具')
-    parser.add_argument('--start_date', help='开始日期(格式:YYYYMMDD)')
-    parser.add_argument('--end_date', help='结束日期(格式:YYYYMMDD)')
+    parser.add_argument('--start_date', help='开始日期 (YYYY-MM-DD)', type=str)
+    parser.add_argument('--end_date', help='结束日期 (YYYY-MM-DD)', type=str)
     return parser.parse_args()
 
-# ================================= 修改主函数逻辑 =================================
-if __name__ == "__main__":
-    args = parse_args()
+# ================================= 主函数逻辑 =================================
+def main(): 
+    # 解析命令行参数
+    args = parse_arguments()
     
-    if args.start_date and args.end_date:
-        # 手动模式处理指定日期范围
-        logger.info(f"手动模式启动 日期范围: {args.start_date} 至 {args.end_date}")
-        download_and_save_level1_data(args.start_date, args.end_date)
-    else:
-        # 自动模式处理当天数据
-        logger.info("自动模式启动 处理当天数据")
-        trade_dates = get_trade_dates()
-        current_date = datetime.now().strftime('%Y%m%d')
-        
-        if current_date in trade_dates:
-            download_and_save_level1_data(current_date, current_date)
-        else:
-            logger.warning(f"当前日期 {current_date} 不是交易日，跳过下载")
-    logger.info("处理完成！")
+    # 设置日期范围
+    current_date = datetime.today().strftime('%Y-%m-%d')
+    start_date = args.start_date if args.start_date else current_date
+    end_date = args.end_date if args.end_date else current_date
+    
+    # 验证日期是否为交易日
+    if not is_trade_date(current_date):
+        logger.warning(f"{current_date} 不是交易日，程序退出")
+        return
+
+    download_and_save_level1_data(start_date, end_date)
+
+
+if __name__ == "__main__":
+    main()

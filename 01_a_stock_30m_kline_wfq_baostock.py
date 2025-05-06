@@ -83,7 +83,7 @@ def download_30min_kline(ts_code: str, start_date: str, end_date: str) -> pd.Dat
         logger.error(f"处理 {ts_code} 数据时发生错误: {str(e)}")
         return pd.DataFrame()
 
-def download_and_store_data(engine, stocks, start_date, end_date, batch_size=100):
+def download_and_store_data(engine, stocks, start_date, end_date, batch_size=500):
     """分批下载并存储数据"""
     logger.info(f"开始下载数据，时间范围: {start_date} 至 {end_date}")
     
@@ -138,7 +138,11 @@ def wait_for_data_ready(trade_date):
                 adjustflag="3"
             )
             
-            if rs.error_code == '0' and len(list(rs)) > 0:
+            data_list = []
+            while (rs.error_code == '0') & rs.next():
+                data_list.append(rs.get_row_data())
+                
+            if data_list:
                 logger.info(f"{trade_date}数据已就绪")
                 return True
                 
@@ -152,55 +156,34 @@ def wait_for_data_ready(trade_date):
     logger.error(f"{trade_date}数据等待超时")
     return False
 
-def is_trade_day(date_str):
-    """判断是否为交易日"""
-    try:
-        sql = text("""
-            SELECT is_open
-            FROM a_stock_trade_cal
-            WHERE trade_date = :trade_date
-        """)
-        with engine.connect() as conn:
-            result = conn.execute(sql, {"trade_date": date_str}).scalar()
-        return result == '1'
-    except Exception as e:
-        logger.error(f"查询交易日历时出错: {str(e)}")
-        return False
 
 def main():
     """主函数"""
-    # 解析命令行参数
     args = parse_arguments()
     
     # 设置日期范围
     if args.start_date and args.end_date:
-        start_time = args.start_date
-        end_time = args.end_date
+        start_date = datetime.strptime(args.start_date, '%Y-%m-%d')
+        end_date = datetime.strptime(args.end_date, '%Y-%m-%d')
     else:
-        # 如果没有指定日期，则下载当日数据
-        today = datetime.today().strftime('%Y-%m-%d')
-        
-        # 判断是否为交易日
-        if not is_trade_day(today):
-            logger.info(f"{today}不是交易日，退出程序")
+        start_date = end_date = datetime.today().strftime('%Y-%m-%d')
+        # 验证日期是否为交易日
+        if not is_trade_date(end_date):
+            logger.warning(f"{end_date} 不是交易日，程序退出")
             return
-            
-        start_time = today
-        end_time = today
-        # 等待数据就绪
-        if not wait_for_data_ready(today):
-            logger.error("当日数据未就绪，退出程序")
+
+        # 当使用当天日期时触发等待流程
+        bs.login()
+        if not wait_for_data_ready(end_date):
+            logger.error("重试耗尽，退出程序")
             return
-    
-    # 登录 baostock
-    bs.login()
     
     # 获取股票列表
     stock_list = get_stock_list(engine)
     stocks = stock_list['ts_code'].tolist()
     
     # 下载并存储数据
-    download_and_store_data(engine, stocks, start_time, end_time)
+    download_and_store_data(engine, stocks, start_date, end_date)
 
 if __name__ == "__main__":
     main()

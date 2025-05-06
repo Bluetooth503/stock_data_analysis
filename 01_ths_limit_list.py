@@ -12,25 +12,7 @@ logger = setup_logger()
 token = config.get('tushare', 'token')
 pro = ts.pro_api(token)
 
-def is_trade_date(date_str):
-    """判断是否为交易日
-    Args:
-        date_str: 日期字符串，格式为YYYYMMDD
-    Returns:
-        bool: 是否为交易日
-    """
-    # 转换日期格式为数据库格式（YYYY-MM-DD）
-    date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
-    # 查询数据库判断是否为交易日
-    sql = text("""
-        SELECT is_open
-        FROM a_stock_trade_cal
-        WHERE trade_date = :date_str
-    """)
-    with engine.connect() as conn:
-        result = conn.execute(sql, {"date_str": date_str}).scalar()
-    return result == '1' if result is not None else False
-
+# ================================= 通用数据获取函数 =================================
 def get_ths_limit_data(trade_date, limit_type):
     """获取同花顺涨跌停数据"""
     try:
@@ -51,19 +33,28 @@ def get_ths_limit_data(trade_date, limit_type):
         logger.error(f"获取{limit_type}数据失败: {str(e)}")
     return None
 
-def main():
-    # 解析命令行参数
+# ================================= 参数解析 =================================
+def parse_arguments():
+    """解析命令行参数"""
     parser = argparse.ArgumentParser(description='下载同花顺涨跌停数据')
     parser.add_argument('--start_date', help='开始日期 (YYYY-MM-DD)', type=str)
     parser.add_argument('--end_date', help='结束日期 (YYYY-MM-DD)', type=str)
-    args = parser.parse_args()
+    return parser.parse_args()
+
+def main():
+    # 解析命令行参数
+    args = parse_arguments()
 
     # 设置日期范围
     if args.start_date and args.end_date:
         start_date = datetime.strptime(args.start_date, '%Y-%m-%d')
         end_date = datetime.strptime(args.end_date, '%Y-%m-%d')
     else:
-        start_date = end_date = datetime.now()
+        start_date = end_date = datetime.today().strftime('%Y-%m-%d')
+        # 验证日期是否为交易日
+        if not is_trade_date(end_date):
+            logger.warning(f"{end_date} 不是交易日，程序退出")
+            return
 
     # 生成日期范围
     date_range = pd.date_range(start=start_date, end=end_date)
@@ -73,7 +64,7 @@ def main():
 
     # 遍历日期范围
     for current_date in date_range:
-        date_str = current_date.strftime('%Y%m%d')
+        date_str = current_date.strftime('%Y-%m-%d')
         
         # 检查是否为交易日
         if not is_trade_date(date_str):

@@ -24,7 +24,5 @@ while (rs.error_code == '0') & rs.next():
 result = pd.DataFrame(data_list, columns=rs.fields)
 
 #### 结果集输出到csv文件 ####   
-result.to_csv("history_A_stock_k_data.csv", index=False)
-
-#### 登出系统 ####
-bs.logout()
+# result.to_csv("history_A_stock_k_data.csv", index=False)
+print(result)

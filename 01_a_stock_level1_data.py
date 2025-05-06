@@ -241,13 +241,11 @@ class Level1DataProcessor:
     def run(self):
         try:
             # 校验交易日
-            current_date = datetime.now().strftime('%Y%m%d')
-            trade_dates = get_trade_dates()
-            
-            if current_date not in trade_dates:
-                self.logger.info(f"当前日期 {current_date} 非交易日，跳过执行")
-                return
-            
+            current_date = datetime.now().strftime('%Y-%m-%d')
+            if not is_trade_date(current_date):
+                logger.warning(f"{end_date} 不是交易日，程序退出")
+                return            
+
             process_thread = threading.Thread(target=self._process_data_worker)
             process_thread.daemon = True
             process_thread.start()

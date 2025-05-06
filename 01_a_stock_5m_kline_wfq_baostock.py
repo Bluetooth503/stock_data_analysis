@@ -1,167 +1,188 @@
 # -*- coding: utf-8 -*-
 from common import *
 import baostock as bs
-import tushare as ts
-
+import argparse
 
 # ================================= 读取配置文件 =================================
 config = load_config()
 engine = create_engine(get_pg_connection_string(config))
-token = config.get('tushare', 'token')
-pro = ts.pro_api(token)
 
 # ================================= 配置日志 =================================
 logger = setup_logger()
 
-# ================================= 定义初始变量 =================================
-# 获取所有上市股票列表
-data = pro.stock_basic(exchange='', list_status='L', fields='ts_code,symbol,name,area,industry,list_date')
-stock_list = data[['ts_code']]
-end_time   = datetime.today().strftime('%Y%m%d')
-period     = '5m'
-table_name = 'a_stock_5m_kline_wfq_baostock'
+# ================================= 获取股票列表 =================================
+def get_stock_list(engine):
+    """从数据库获取股票代码列表"""
+    query = "SELECT DISTINCT ts_code FROM a_stock_name"
+    return pd.read_sql(query, engine)
 
-# ================================= 获取数据库中最新的记录时间 =================================
-def get_latest_record_time(engine) -> str:
-    """获取数据库中最新的记录时间"""
-    query = f"""
-        SELECT MAX(trade_time) 
-        FROM {table_name}
-    """
-    try:
-        with engine.connect() as conn:
-            result = conn.execute(text(query)).scalar()
-            return result.strftime('%Y%m%d') if result else '20190101' # 5分钟K线数据从2019年开始
-    except:
-        return '20190101' # 5分钟K线数据从2019年开始
+# ================================= 参数解析 =================================
+def parse_arguments():
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(description='下载A股5分钟K线数据')
+    parser.add_argument('--start_date', help='开始日期 (YYYY-MM-DD)', type=str)
+    parser.add_argument('--end_date', help='结束日期 (YYYY-MM-DD)', type=str)
+    return parser.parse_args()
 
-# ================================= 下载指定股票的5分钟K线数据 =================================
-def download_5min_kline(ts_code: str, start_date: str, end_date: str, max_retries: int = 3) -> pd.DataFrame:
+# ================================= 下载5分钟K线数据 =================================
+def download_5min_kline(ts_code: str, start_date: str, end_date: str) -> pd.DataFrame:
     """下载指定股票的5分钟K线数据"""
-    # code和日期格式转换
-    bs_code = convert_to_baostock_code(ts_code)
-    bs_start_date = convert_date_format(start_date)
-    bs_end_date = convert_date_format(end_date)
-    
-    for retry in range(max_retries):
-        try:
-            rs = bs.query_history_k_data_plus(
-                code = bs_code,
-                fields = "date,time,code,open,high,low,close,volume,amount,adjustflag",
-                start_date = bs_start_date,
-                end_date = bs_end_date,
-                frequency = "5",
-                adjustflag = "3"  # 不复权
-            )
+    try:
+        # 查询数据
+        rs = bs.query_history_k_data_plus(
+            code=convert_to_baostock_code(ts_code),
+            fields="date,time,code,open,high,low,close,volume,amount,adjustflag",
+            start_date=start_date,
+            end_date=end_date,
+            frequency="5",
+            adjustflag="3"  # 不复权
+        )
+        
+        if rs.error_code != '0':
+            logger.error(f"下载 {ts_code} 数据时出错: {rs.error_msg}")
+            return pd.DataFrame()
             
-            if rs.error_code != '0':
-                logger.error(f"下载 {ts_code} 数据时出错 (尝试 {retry + 1}/{max_retries}): {rs.error_msg}")
-                if retry < max_retries - 1:
-                    time.sleep(1)  # 等待1秒后重试
-                    continue
-                return pd.DataFrame()
+        # 将结果转换为DataFrame
+        data_list = []
+        while (rs.error_code == '0') & rs.next():
+            row = rs.get_row_data()
+            data_list.append(row)
+            
+        if not data_list:
+            return pd.DataFrame()
+            
+        # 创建DataFrame并进行数据处理
+        df = pd.DataFrame(data_list, columns=rs.fields)
+        df['time'] = df['time'].apply(format_time)
+        df['trade_time'] = pd.to_datetime(df['date'] + ' ' + df['time'])
+        df['code'] = df['code'].apply(convert_to_tushare_code)
+        
+        # 重命名并选择列
+        result_df = df.rename(columns={'code': 'ts_code', 'adjustflag': 'adjust_flag'})
+        result_df = result_df[['trade_time', 'ts_code', 'open', 'high', 'low', 'close', 'volume', 'amount', 'adjust_flag']].copy()
+        
+        # 过滤零成交量数据
+        result_df = result_df[pd.to_numeric(result_df['volume']) > 0]
+        
+        # 过滤异常数据
+        result_df = result_df[
+            (pd.to_numeric(result_df['open'])  > 0) &
+            (pd.to_numeric(result_df['high'])  > 0) &
+            (pd.to_numeric(result_df['low'])   > 0) &
+            (pd.to_numeric(result_df['close']) > 0) &
+            (pd.to_numeric(result_df['high'])  >= pd.to_numeric(result_df['low'])) &
+            (pd.to_numeric(result_df['open'])  <= pd.to_numeric(result_df['high'])) &
+            (pd.to_numeric(result_df['open'])  >= pd.to_numeric(result_df['low'])) &
+            (pd.to_numeric(result_df['close']) <= pd.to_numeric(result_df['high'])) &
+            (pd.to_numeric(result_df['close']) >= pd.to_numeric(result_df['low']))
+        ]
+        
+        return result_df
+        
+    except Exception as e:
+        logger.error(f"处理 {ts_code} 数据时发生错误: {str(e)}")
+        return pd.DataFrame()
+
+def download_and_store_data(engine, stocks, start_date, end_date, batch_size=10):
+    """分批下载并存储数据"""
+    logger.info(f"开始下载数据，时间范围: {start_date} 至 {end_date}")
+    
+    # 分批处理股票
+    for i in range(0, len(stocks), batch_size):
+        batch_stocks = stocks[i:i + batch_size]
+        all_data = []  # 用于存储当前批次下载的数据
+        
+        for ts_code in tqdm(batch_stocks, desc=f'下载数据 (批次 {i // batch_size + 1})'):
+            df = download_5min_kline(ts_code=ts_code, start_date=start_date, end_date=end_date)
+            
+            if not df.empty:
+                all_data.append(df)
+            else:
+                logger.warning(f"{ts_code} 在 {start_date} 至 {end_date} 期间没有数据")
+        
+        # 合并当前批次数据并保存到数据库
+        if all_data:
+            final_df = pd.concat(all_data, ignore_index=True)
+            logger.info(f"批次 {i // batch_size + 1} 共下载 {len(final_df)} 条记录")
+            # 使用 save_to_database 保存数据
+            if save_to_database(
+                df=final_df,
+                table_name='a_stock_5m_kline_wfq_baostock',
+                conflict_columns=['trade_time', 'ts_code'],
+                data_type='5分钟K线',
+                engine=engine,
+                update_columns=['open', 'high', 'low', 'close', 'volume', 'amount', 'adjust_flag']
+            ):
+                logger.info(f"批次 {i // batch_size + 1} 数据保存完成")
+            else:
+                logger.error(f"批次 {i // batch_size + 1} 数据保存失败")
+
+def wait_for_data_ready(trade_date):
+    """等待当日数据就绪"""
+    max_retries = 12  # 最大重试次数
+    retry_interval = 1800  # 重试间隔（秒）
+    retries = 0
+    
+    while retries < max_retries:
+        try:
+            # 尝试获取当日任意股票的数据
+            stock_list = get_stock_list(engine)
+            test_stock = stock_list['ts_code'].iloc[0]
+            bs_code = convert_to_baostock_code(test_stock)
+            rs = bs.query_history_k_data_plus(
+                code=bs_code,
+                fields="date,time",
+                start_date=trade_date,
+                end_date=trade_date,
+                frequency="30",
+                adjustflag="3"
+            )
             
             data_list = []
             while (rs.error_code == '0') & rs.next():
                 data_list.append(rs.get_row_data())
                 
-            if not data_list:
-                return pd.DataFrame()
+            if data_list:
+                logger.info(f"{trade_date}数据已就绪")
+                return True
                 
-            df = pd.DataFrame(data_list, columns=rs.fields)
-            
-            # 转换股票代码格式和时间格式
-            df['code'] = df['code'].apply(convert_to_tushare_code)
-            df['time'] = df['time'].apply(format_time)
-            df['trade_time'] = pd.to_datetime(df['date'] + ' ' + df['time'], format='%Y-%m-%d %H:%M:%S')
-            
-            # 重命名列以匹配数据库表结构
-            df = df.rename(columns={'code': 'ts_code', 'adjustflag': 'adjust_flag'})
-            
-            # 选择需要的列并转换数据类型
-            result_df = df[['trade_time', 'ts_code', 'open', 'high', 'low', 'close', 'volume', 'amount', 'adjust_flag']].copy()
-            
-            # 转换数据类型
-            numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount']
-            result_df[numeric_columns] = result_df[numeric_columns].apply(pd.to_numeric)
-            result_df['adjust_flag'] = result_df['adjust_flag'].astype(int)
-                
-            return result_df
-            
         except Exception as e:
-            logger.error(f"下载 {ts_code} 数据时发生异常 (尝试 {retry + 1}/{max_retries}): {str(e)}")
-            if retry < max_retries - 1:
-                time.sleep(1)  # 等待1秒后重试
-                continue
-            return pd.DataFrame()
-
-def get_trade_dates_between(start_date, end_date):
-    """获取两个日期之间的所有交易日列表"""
-    calendar = pro.trade_cal(start_date=start_date, end_date=end_date)
-    trade_dates = calendar[calendar['is_open'] == 1]['cal_date'].sort_values().tolist()
-    return trade_dates
-
-def process_date_stocks(date, stocks):
-    """处理指定日期的所有股票数据"""
-    results = []
+            logger.warning(f"检查数据就绪状态时出错: {str(e)}")
+        
+        retries += 1
+        logger.info(f"数据未就绪，{retry_interval}秒后重试 ({retries}/{max_retries})")
+        time.sleep(retry_interval)
     
-    # 创建进度条
-    for ts_code in tqdm(stocks, desc=f"下载{date}数据"):
-        try:
-            df = download_5min_kline(ts_code=ts_code, start_date=date, end_date=date)
-            if not df.empty:
-                results.append(df)
-        except Exception as e:
-            logger.error(f"处理股票 {ts_code} 时发生错误: {str(e)}")
-    
-    return results
-
-def save_to_database_batch(df_list, engine):
-    """批量保存数据到数据库"""
-    if not df_list:
-        return
-    
-    try:
-        final_df = pd.concat(df_list, ignore_index=True)
-        if save_to_database(
-            df=final_df,
-            table_name=table_name,
-            conflict_columns=['trade_time', 'ts_code'],
-            data_type='5分钟K线',
-            engine=engine
-        ):
-            logger.info(f"成功保存 {len(final_df)} 条记录到数据库")
-        else:
-            logger.error(f"保存 {len(final_df)} 条记录到数据库失败")
-    except Exception as e:
-        logger.error(f"保存数据到数据库时发生错误: {str(e)}")
+    logger.error(f"{trade_date}数据等待超时")
+    return False
 
 def main():
     """主函数"""
-    bs.login()
+    args = parse_arguments()
     
-    try:
-        # 获取最新记录时间
-        latest_time = (pd.to_datetime(get_latest_record_time(engine)) + pd.Timedelta(days=1)).strftime('%Y%m%d')
+    # 设置日期范围
+    if args.start_date and args.end_date:
+        start_date = datetime.strptime(args.start_date, '%Y-%m-%d')
+        end_date = datetime.strptime(args.end_date, '%Y-%m-%d')
+    else:
+        start_date = end_date = datetime.today().strftime('%Y-%m-%d')
+        # 验证日期是否为交易日
+        if not is_trade_date(end_date):
+            logger.warning(f"{end_date} 不是交易日，程序退出")
+            return
 
-        # 获取股票列表
-        stocks = stock_list['ts_code'].tolist()
-        
-        # 获取交易日列表
-        trade_dates = get_trade_dates_between(latest_time, end_time)
-        logger.info(f"需要处理的交易日数量: {len(trade_dates)}")
-        
-        # 按日期循环
-        for current_date in trade_dates:
-            # 处理当前日期的所有股票
-            results = process_date_stocks(current_date, stocks)
-            
-            # 保存结果到数据库
-            if results:
-                save_to_database_batch(results, engine)
+        # 当使用当天日期时触发等待流程
+        bs.login()
+        if not wait_for_data_ready(end_date):
+            logger.error("重试耗尽，退出程序")
+            return
     
-    except Exception as e:
-        logger.error(f"程序执行过程中发生错误: {str(e)}")
+    # 获取股票列表
+    stock_list = get_stock_list(engine)
+    stocks = stock_list['ts_code'].tolist()
+    
+    # 下载并存储数据
+    download_and_store_data(engine, stocks, start_date, end_date)
 
 if __name__ == "__main__":
     main()

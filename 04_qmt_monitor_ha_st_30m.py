@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from common import *
 from multiprocessing import Pool
+import pandas_ta as ta
 from xtquant import xtdata
 from xtquant.xttrader import XtQuantTrader
 from xtquant.xttype import StockAccount
@@ -105,10 +106,11 @@ class QMTTrader:
         )
         return result, result is not None
 
-    @retry_on_failure(max_retries=3, delay=2)
+    @retry_on_failure(max_retries=6, delay=3)
     def get_stock_tick(self, code):
         """获取股票tick数据"""
         tick_data = xtdata.get_full_tick([code])
+        print(tick_data)
         if isinstance(tick_data, dict) and code in tick_data:
             return tick_data
         return None
@@ -140,14 +142,17 @@ class QMTTrader:
         # 1. 获取最新行情
         tick = self.get_stock_tick(code)
         if not (tick and code in tick and tick[code]):
-            error_msg = f"无法获取股票{code}的tick数据"
-            logger.error(error_msg)
-            send_notification_wecom("获取Tick数据失败", error_msg)
-            return
-        tick_data = tick[code]
-        last_price = tick_data["lastPrice"]  # 最新价
-        bid_price = tick_data["bidPrice"][0]  # 买一价
-        ask_price = tick_data["askPrice"][0]  # 卖一价
+            error_msg = f"无法获取股票{code}的tick数据，使用最后一根K线收盘价"
+            logger.warning(error_msg)
+            # 使用最后一根K线的收盘价作为基准价格
+            last_price = current_price
+            bid_price = 0
+            ask_price = 0
+        else:
+            tick_data = tick[code]
+            last_price = tick_data["lastPrice"]  # 最新价
+            bid_price = tick_data["bidPrice"][0]  # 买一价
+            ask_price = tick_data["askPrice"][0]  # 卖一价
 
         # 2. 准备通知内容
         subject = f"{stock_params['name']} - {signal} - {current_price}"
@@ -339,10 +344,8 @@ if __name__ == "__main__":
     trader = None
     try:
         # 校验交易日
-        current_date = datetime.now().strftime('%Y%m%d')
-        trade_dates = get_trade_dates()
-        
-        if current_date not in trade_dates:
+        current_date = datetime.now().strftime('%Y-%m-%d')        
+        if not is_trade_date(current_date):
             logger.info(f"当前日期 {current_date} 非交易日，跳过执行")
             sys.exit(0)
 
