@@ -111,9 +111,7 @@ class QMTTrader:
         """获取股票tick数据"""
         tick_data = xtdata.get_full_tick([code])
         print(tick_data)
-        if isinstance(tick_data, dict) and code in tick_data:
-            return tick_data
-        return None
+        return tick_data
 
     def subscribe_stocks(self, code_list):
         """订阅股票行情"""
@@ -141,7 +139,7 @@ class QMTTrader:
         """处理交易信号"""
         # 1. 获取最新行情
         tick = self.get_stock_tick(code)
-        if not (tick and code in tick and tick[code]):
+        if not tick:
             error_msg = f"无法获取股票{code}的tick数据，使用最后一根K线收盘价"
             logger.warning(error_msg)
             # 使用最后一根K线的收盘价作为基准价格
@@ -212,7 +210,7 @@ def get_top_stocks():
     """从CSV文件获取监控标的"""
     try:
         # 读取CSV文件
-        df = pd.read_csv('qmt_monitor_stocks_calmar.csv', encoding='utf-8')
+        df = pd.read_csv('calmar优化_30m_20250327.csv', encoding='utf-8')
         # 确保必要的列存在
         required_columns = ['ts_code', 'period', 'multiplier', 'sharpe', 'sortino', 'win_rate', 'profit_factor', 'name', 'circ_mv_range']
         if not all(col in df.columns for col in required_columns):
@@ -222,7 +220,7 @@ def get_top_stocks():
         logger.info(f"监控标的数量: {len(df)}")
         return df
     except FileNotFoundError:
-        logger.error("错误: 未找到qmt_monitor_stocks_calmar.csv文件")
+        logger.error("错误: 未找到csv文件")
         return pd.DataFrame()
     except Exception as e:
         logger.error(f"读取监控标的时发生错误: {str(e)}")
@@ -350,7 +348,7 @@ if __name__ == "__main__":
             sys.exit(0)
 
         # 设置停止时间
-        stop_time = datetime.strptime('16:00:00', '%H:%M:%S').time()
+        stop_time = datetime.strptime('15:10:00', '%H:%M:%S').time()
 
         # 初始化交易接口
         trader = QMTTrader()

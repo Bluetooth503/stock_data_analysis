@@ -83,7 +83,7 @@ def download_5min_kline(ts_code: str, start_date: str, end_date: str) -> pd.Data
         logger.error(f"处理 {ts_code} 数据时发生错误: {str(e)}")
         return pd.DataFrame()
 
-def download_and_store_data(engine, stocks, start_date, end_date, batch_size=10):
+def download_and_store_data(engine, stocks, start_date, end_date, batch_size=5):
     """分批下载并存储数据"""
     logger.info(f"开始下载数据，时间范围: {start_date} 至 {end_date}")
     
@@ -159,11 +159,11 @@ def wait_for_data_ready(trade_date):
 def main():
     """主函数"""
     args = parse_arguments()
-    
+    bs.login()
     # 设置日期范围
     if args.start_date and args.end_date:
-        start_date = datetime.strptime(args.start_date, '%Y-%m-%d')
-        end_date = datetime.strptime(args.end_date, '%Y-%m-%d')
+        start_date = args.start_date
+        end_date = args.end_date
     else:
         start_date = end_date = datetime.today().strftime('%Y-%m-%d')
         # 验证日期是否为交易日
@@ -172,7 +172,6 @@ def main():
             return
 
         # 当使用当天日期时触发等待流程
-        bs.login()
         if not wait_for_data_ready(end_date):
             logger.error("重试耗尽，退出程序")
             return

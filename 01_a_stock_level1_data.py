@@ -41,7 +41,7 @@ class StockQuote:
 class Level1DataProcessor:
     """Level1行情数据处理器"""
     def __init__(self):
-        self.stop_time = datetime.strptime('16:00:00', '%H:%M:%S').time()
+        self.stop_time = datetime.strptime('15:15:00', '%H:%M:%S').time()
         self.tz = timezone(timedelta(hours=8))
         self.config = load_config()
         self.logger = setup_logger()

@@ -192,3 +192,13 @@ xtquant
 *.code-workspace
 *.public
 *.secret
+*.zip
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar
+*.7z
+*.gz
+*.bz2
+*.xz
+*.exe

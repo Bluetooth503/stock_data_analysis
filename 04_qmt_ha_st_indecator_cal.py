@@ -20,7 +20,7 @@ ts_code = f"{code}.SH" if code.startswith('6') else f"{code}.SZ"
 
 
 # 读取配置
-df_parm = pd.read_csv('qmt_monitor_stocks_calmar.csv', encoding='utf-8')
+df_parm = pd.read_csv('calmar优化_30m_20250327.csv', encoding='utf-8')
 df_parm = df_parm[df_parm['ts_code'] == ts_code]
 
 # ================================= Heikin-Ashi SuperTrend 计算 =================================

@@ -160,11 +160,12 @@ def wait_for_data_ready(trade_date):
 def main():
     """主函数"""
     args = parse_arguments()
-    
+    bs.login()
+
     # 设置日期范围
     if args.start_date and args.end_date:
-        start_date = datetime.strptime(args.start_date, '%Y-%m-%d')
-        end_date = datetime.strptime(args.end_date, '%Y-%m-%d')
+        start_date = args.start_date
+        end_date = args.end_date
     else:
         start_date = end_date = datetime.today().strftime('%Y-%m-%d')
         # 验证日期是否为交易日
@@ -173,7 +174,6 @@ def main():
             return
 
         # 当使用当天日期时触发等待流程
-        bs.login()
         if not wait_for_data_ready(end_date):
             logger.error("重试耗尽，退出程序")
             return

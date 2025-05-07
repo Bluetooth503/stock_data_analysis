@@ -38,6 +38,7 @@ def get_index_data(ts_code, start_date, end_date):
     while (rs.error_code == '0') & rs.next():
         data_list.append(rs.get_row_data())
     df = pd.DataFrame(data_list, columns=rs.fields)
+    print(df)
         
     # 处理数据
     if not df.empty:
@@ -45,19 +46,6 @@ def get_index_data(ts_code, start_date, end_date):
         df.rename(columns={'date': 'trade_date'}, inplace=True)
         numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'amount']
         df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors='coerce')
-        # 将日期字符串转换为yyyMMdd格式
-        df['trade_date'] = pd.to_datetime(df['trade_date']).dt.strftime('%Y-%m-%d')
-        # 确保数据类型正确
-        df = df.astype({
-            'trade_date': 'str',
-            'ts_code': 'str',
-            'open': 'float64',
-            'high': 'float64',
-            'low': 'float64',
-            'close': 'float64',
-            'volume': 'float64',
-            'amount': 'float64'
-        })
     # 确保列的顺序正确
     df = df[['trade_date', 'ts_code', 'open', 'high', 'low', 'close', 'volume', 'amount']]
     return df
@@ -75,8 +63,15 @@ def check_index_data_ready(check_date):
             adjustflag="3"
         )
         
-        # 验证返回结果中的日期字段
-        return any(row[0] == check_date for row in rs.get_row_data())
+        data_list = []
+        while (rs.error_code == '0') & rs.next():
+            data_list.append(rs.get_row_data())
+
+        if data_list:
+            print(data_list)
+            logger.info(f"{trade_date}数据已就绪")
+            return True
+
     except Exception as e:
         logger.warning(f"数据检查异常: {str(e)}")
         return False
@@ -100,11 +95,12 @@ def wait_for_data(check_date):
 def main(): 
     # 解析命令行参数
     args = parse_arguments()
-    
+    bs.login()
+
     # 设置日期范围
     if args.start_date and args.end_date:
-        start_date = datetime.strptime(args.start_date, '%Y-%m-%d')
-        end_date = datetime.strptime(args.end_date, '%Y-%m-%d')
+        start_date = args.start_date
+        end_date = args.end_date
     else:
         start_date = end_date = datetime.today().strftime('%Y-%m-%d')
         # 验证日期是否为交易日
@@ -113,7 +109,6 @@ def main():
             return
 
         # 当使用当天日期时触发等待流程
-        bs.login()
         if not wait_for_data(end_date):
             logger.error("重试耗尽，退出程序")
             return

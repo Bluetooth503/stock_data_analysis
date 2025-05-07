@@ -67,7 +67,7 @@ schedule.every().day.at("00:00").do(task_manager.reset_daily)
 
 # 设置任务调度
 schedule.every().day.at("09:00").do(run_script, "01_a_stock_level1_data.py")
-schedule.every().day.at("09:00").do(run_script, "04_qmt_monitor_ha_st_30m.py")
+schedule.every().day.at("09:05").do(run_script, "04_qmt_monitor_ha_st_30m.py")
 schedule.every().day.at("16:30").do(run_script, "01_ods_a_stock_level1_data.py")
 schedule.every().day.at("16:40").do(run_script, "01_a_stock_daily_basic.py")
 schedule.every().day.at("16:50").do(run_script, "01_ths_limit_list.py")
