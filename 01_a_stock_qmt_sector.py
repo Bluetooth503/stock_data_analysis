@@ -3,7 +3,7 @@ from common import *
 from xtquant import xtdata
 xtdata.enable_hello = False
 
-index_name = ['上证50','沪深300','中证500','中证1000']
+index_name = ['上证50','沪深300','中证500','中证1000','沪深A股']
 # 循环获取各指数成分股并合并
 df = pd.concat([
     pd.DataFrame({

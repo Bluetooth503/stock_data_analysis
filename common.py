@@ -11,6 +11,7 @@ from datetime import datetime, date, timedelta, timezone
 import psycopg2
 from psycopg2 import pool
 from typing import Dict, List, Optional, Callable, Set, Union, Tuple
+from functools import wraps
 from sqlalchemy import create_engine, text, DateTime
 from loguru import logger
 import warnings
@@ -162,37 +163,56 @@ def send_notification_wecom(subject, content):
     return False
 
 def retry_on_failure(max_retries=3, delay=1):
-    """重试装饰器 """
+    """重试装饰器"""
     def decorator(func):
+        @wraps(func)
         def wrapper(*args, **kwargs):
+            last_exception = None
             for attempt in range(max_retries):
                 try:
                     result = func(*args, **kwargs)
-                    # 处理成功情况：元组(带success标志)、列表、正数
-                    if (isinstance(result, tuple) and len(result) > 1 and result[1]) or \
-                       isinstance(result, list) or \
-                       (isinstance(result, (int, float)) and result > 0):
+                    # 处理tick数据返回结果
+                    if isinstance(result, dict):
                         return result
-                    
-                    # 处理失败情况
+                    # 处理订单结果
+                    if isinstance(result, tuple):
+                        seq, success = result
+                        if success:
+                            return seq, True
+                    # 处理列表结果
+                    if isinstance(result, list):
+                        return result
+                    # 处理数值结果
+                    if result is not None and result > 0:
+                        return result
+                    # 如果结果为空或无效，进行重试
                     if attempt < max_retries - 1:
-                        logger.warning(f"执行{func.__name__}失败，重试 {attempt + 1}/{max_retries}")
+                        print(f"执行{func.__name__}返回无效结果，{attempt + 1}/{max_retries}次，等待{delay}秒后重试...")
                         time.sleep(delay)
-                        continue
-                    logger.error(f"执行{func.__name__}失败，达到最大重试次数")
+                    else:
+                        print(f"执行{func.__name__}返回无效结果，已达到最大重试次数{max_retries}次")
+                        return None
                 except Exception as e:
+                    last_exception = e
                     if attempt < max_retries - 1:
-                        logger.warning(f"执行{func.__name__}异常: {str(e)}，重试 {attempt + 1}/{max_retries}")
+                        print(f"执行{func.__name__}出错: {str(e)}，{attempt + 1}/{max_retries}次，等待{delay}秒后重试...")
                         time.sleep(delay)
-                        continue
-                    logger.error(f"执行{func.__name__}异常: {str(e)}，达到最大重试次数")
-            return -1, False
+                    else:
+                        print(f"执行{func.__name__}出错: {str(e)}，已达到最大重试次数{max_retries}次")
+                        return None
+            # 如果所有重试都失败，返回None
+            return None
         return wrapper
     return decorator
 
 # ================================= 获取最近n个交易日 =================================
 def get_trade_dates(start_date, end_date):
     """获取交易日列表"""
+    # 如果是YYYYMMDD格式，转换为YYYY-MM-DD格式
+    if len(start_date) == 8 and start_date.isdigit():
+        start_date = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"
+        end_date = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:]}"
+
     # 构建SQL查询
     sql = text("""
         SELECT trade_date::text

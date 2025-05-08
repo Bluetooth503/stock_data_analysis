@@ -110,8 +110,9 @@ class QMTTrader:
     def get_stock_tick(self, code):
         """获取股票tick数据"""
         tick_data = xtdata.get_full_tick([code])
-        print(tick_data)
-        return tick_data
+        if isinstance(tick_data, dict) and code in tick_data:
+            return tick_data
+        return None
 
     def subscribe_stocks(self, code_list):
         """订阅股票行情"""
