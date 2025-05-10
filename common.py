@@ -95,7 +95,7 @@ def save_to_database(df: pd.DataFrame, table_name: str, conflict_columns: list, 
         update_columns: 发生冲突时需要更新的列名列表
     """    
     def transform_column(col, df):
-        if col in ['open', 'high', 'low', 'close', 'volume', 'amount']:
+        if col in ['open', 'high', 'low', 'close', 'volume', 'amount', 'adjust_flag']:
             return f'"{col}"::NUMERIC'
         elif col == 'trade_time':
             if df[col].dtype.kind in 'iu':  # i表示整数，u表示无符号整数

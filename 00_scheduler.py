@@ -29,15 +29,19 @@ task_manager = TaskManager()
 
 # ================================= 执行 =================================
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
-def run_script_no_check(script_name):
+def run_script_no_check(script_name, conda_env=None):
     """执行脚本，不检查任务依赖状态"""
     script_path = os.path.join(BASE_PATH, script_name)
     if not os.path.exists(script_path):
         logger.error(f"错误: 脚本文件 {script_path} 不存在")
         return
     
-    # 使用conda环境中的Python解释器
-    conda_python = os.path.join(os.environ.get('CONDA_PREFIX', ''), 'python.exe')
+    # 使用指定的conda环境或当前环境
+    if conda_env:
+        conda_python = os.path.join(os.environ.get('CONDA_PREFIX', ''), 'envs', conda_env, 'python.exe')
+    else:
+        conda_python = os.path.join(os.environ.get('CONDA_PREFIX', ''), 'python.exe')
+    
     if not os.path.exists(conda_python):
         logger.error(f"错误: 未找到conda环境中的Python解释器: {conda_python}")
         return
@@ -51,7 +55,7 @@ def run_script_no_check(script_name):
     except subprocess.CalledProcessError as e:
         logger.error(f"任务 {script_name} 执行出错: {str(e)}")
 
-def run_script(script_name):
+def run_script(script_name, conda_env=None):
     """执行脚本，检查任务依赖状态"""
     # 检查任务依赖
     if not task_manager.can_run_task(script_name):
@@ -63,8 +67,12 @@ def run_script(script_name):
         logger.error(f"错误: 脚本文件 {script_path} 不存在")
         return
     
-    # 使用conda环境中的Python解释器
-    conda_python = os.path.join(os.environ.get('CONDA_PREFIX', ''), 'python.exe')
+    # 使用指定的conda环境或当前环境
+    if conda_env:
+        conda_python = os.path.join(os.environ.get('CONDA_PREFIX', ''), 'envs', conda_env, 'python.exe')
+    else:
+        conda_python = os.path.join(os.environ.get('CONDA_PREFIX', ''), 'python.exe')
+    
     if not os.path.exists(conda_python):
         logger.error(f"错误: 未找到conda环境中的Python解释器: {conda_python}")
         return
@@ -88,23 +96,20 @@ def run_script(script_name):
 # 每天0点重置任务状态
 schedule.every().day.at("00:00").do(task_manager.reset_daily)
 
-# 有依赖关系的任务
-# schedule.every().day.at("09:00").do(run_script, "01_a_stock_level1_data.py")
-
 # 无依赖关系的任务
-schedule.every().day.at("09:00").do(run_script_no_check, "01_a_stock_level1_data.py")
-schedule.every().day.at("09:05").do(run_script_no_check, "04_qmt_monitor_ha_st_30m.py")
-schedule.every().day.at("16:30").do(run_script_no_check, "01_ods_a_stock_level1_data.py")
-schedule.every().day.at("16:40").do(run_script_no_check, "01_a_stock_daily_basic.py")
-schedule.every().day.at("16:50").do(run_script_no_check, "01_ths_limit_list.py")
-schedule.every().day.at("18:00").do(run_script_no_check, "01_a_stock_30m_kline_wfq_baostock.py")
-schedule.every().day.at("19:00").do(run_script_no_check, "01_a_index_1day_kline_baostock.py")
+schedule.every().day.at("09:00").do(lambda: run_script_no_check("01_a_stock_level1_data.py", "stock"))
+schedule.every().day.at("09:05").do(lambda: run_script_no_check("04_qmt_monitor_ha_st_30m.py", "stock"))
+schedule.every().day.at("16:30").do(lambda: run_script_no_check("01_ods_a_stock_level1_data.py", "stock"))
+schedule.every().day.at("16:40").do(lambda: run_script_no_check("01_a_stock_daily_basic.py", "stock"))
+schedule.every().day.at("16:50").do(lambda: run_script_no_check("01_ths_limit_list.py", "stock"))
+schedule.every().day.at("18:00").do(lambda: run_script_no_check("01_a_stock_30m_kline_wfq_baostock.py", "stock"))
+schedule.every().day.at("19:00").do(lambda: run_script_no_check("01_a_index_1day_kline_baostock.py", "stock"))
 
 # ================================= 周任务 =================================
 # 无依赖关系的周任务
-schedule.every().saturday.at("02:00").do(run_script_no_check, "01_ths_index_members.py")
-schedule.every().saturday.at("03:00").do(run_script_no_check, "01_a_stock_trade_cal.py")
-schedule.every().saturday.at("03:00").do(run_script_no_check, "01_a_stock_basic.py")
+schedule.every().saturday.at("02:00").do(lambda: run_script_no_check("01_ths_index_members.py", "stock"))
+schedule.every().saturday.at("03:00").do(lambda: run_script_no_check("01_a_stock_trade_cal.py", "stock"))
+schedule.every().saturday.at("03:00").do(lambda: run_script_no_check("01_a_stock_basic.py", "stock"))
 
 
 # schedule.every(10).minutes.do(run_script, "your_script.py")

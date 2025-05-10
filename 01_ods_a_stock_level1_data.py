@@ -3,6 +3,7 @@ from common import *
 from xtquant import xtdata
 xtdata.enable_hello = False
 
+
 # ================================= 读取配置文件 =================================
 logger = setup_logger()
 config = load_config()
@@ -82,6 +83,21 @@ def download_batch_stock_data(stocks: list, date: str) -> None:
         # 使用save_to_database函数保存到数据库，避免重复数据
         conflict_columns = ['ts_code', 'trade_time']
         save_to_database(final_df, 'ods_a_stock_level1_data', conflict_columns, 'Level 1 Data', engine)
+        
+        # 保存为parquet文件
+        base_path = r'D:\a_stock_data\0'
+        # 按股票代码分组保存
+        for ts_code, group_df in final_df.groupby('ts_code'):
+            # 创建股票对应的目录
+            stock_dir = os.path.join(base_path, ts_code)
+            os.makedirs(stock_dir, exist_ok=True)
+            
+            # 构建文件路径
+            file_path = os.path.join(stock_dir, f'{date}.parquet')
+            
+            # 保存为parquet文件，使用zstd压缩
+            group_df.to_parquet(file_path, compression='zstd', index=False)
+            logger.info(f"已保存 {ts_code} 的parquet文件到 {file_path}")
 
 
 def download_and_save_level1_data(start_date: str, end_date: str) -> None:

@@ -1,3 +1,60 @@
+CREATE TABLE public.ods_a_stock_level1_data (
+  trade_time timestamp NOT NULL,
+	ts_code TEXT NOT NULL,
+	last_price float8 NULL,
+	"open" float8 NULL,
+	high float8 NULL,
+	low float8 NULL,
+	pre_close float8 NULL,
+	volume int8 NULL,
+	amount float8 NULL,
+	transaction_num int8 NULL,
+	bid_price1 float8 NULL,
+	bid_volume1 int8 NULL,
+	bid_price2 float8 NULL,
+	bid_volume2 int8 NULL,
+	bid_price3 float8 NULL,
+	bid_volume3 int8 NULL,
+	bid_price4 float8 NULL,
+	bid_volume4 int8 NULL,
+	bid_price5 float8 NULL,
+	bid_volume5 int8 NULL,
+	ask_price1 float8 NULL,
+	ask_volume1 int8 NULL,
+	ask_price2 float8 NULL,
+	ask_volume2 int8 NULL,
+	ask_price3 float8 NULL,
+	ask_volume3 int8 NULL,
+	ask_price4 float8 NULL,
+	ask_volume4 int8 NULL,
+	ask_price5 float8 NULL,
+	ask_volume5 int8 NULL,
+	CONSTRAINT ods_a_stock_level1_data_unique UNIQUE (ts_code, trade_time)
+);
+SELECT create_hypertable('ods_a_stock_level1_data', 'trade_time', migrate_data => true);
+ALTER TABLE ods_a_stock_level1_data SET (timescaledb.compress,timescaledb.compress_segmentby = 'ts_code');
+SELECT add_compression_policy('ods_a_stock_level1_data', INTERVAL '15 days');
+
+
+CREATE TABLE public.a_stock_5m_kline_wfq_baostock (
+	trade_time timestamp NOT NULL,
+	ts_code text NOT NULL,
+	"open" numeric(18, 4) NULL,
+	high numeric(18, 4) NULL,
+	low numeric(18, 4) NULL,
+	"close" numeric(18, 4) NULL,
+	volume numeric(18, 4) NULL,
+	amount numeric(18, 4) NULL,
+	adjust_flag int4 NULL,
+	CONSTRAINT a_stock_5m_kline_wfq_baostock_pkey PRIMARY KEY (trade_time, ts_code)
+);
+CREATE INDEX a_stock_5m_kline_wfq_baostock_trade_time_idx ON public.a_stock_5m_kline_wfq_baostock USING btree (trade_time);
+CREATE INDEX idx_5m_kline_wfq_baostock_ts_code ON public.a_stock_5m_kline_wfq_baostock USING btree (ts_code);
+SELECT create_hypertable('a_stock_5m_kline_wfq_baostock', 'trade_time');
+ALTER TABLE a_stock_30m_kline_wfq_baostock SET (timescaledb.compress, timescaledb.compress_segmentby = 'ts_code');
+-- SELECT add_compression_policy('a_stock_30m_kline_wfq_baostock', INTERVAL '2 days');
+
+
 CREATE TABLE public.a_stock_30m_kline_wfq_baostock (
 	trade_time timestamp NOT NULL,
 	ts_code text NOT NULL,
@@ -357,18 +414,8 @@ CREATE INDEX "ths_index_members_ts_code_idx" ON "public"."ths_index_members" USI
 CREATE INDEX "ths_index_members_ts_name_idx" ON "public"."ths_index_members" USING btree ("ts_name" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST);
 
 
-CREATE TABLE "public"."a_stock_5m_kline_wfq_baostock" (
-  "trade_time" timestamp(6) NOT NULL,
-  "ts_code" varchar(20) COLLATE "pg_catalog"."default" NOT NULL,
-  "open" numeric(18,4),
-  "high" numeric(18,4),
-  "low" numeric(18,4),
-  "close" numeric(18,4),
-  "volume" numeric(18,4),
-  "amount" numeric(18,4),
-  "adjust_flag" int4,
-  CONSTRAINT "a_stock_5m_kline_wfq_baostock_pkey" PRIMARY KEY ("trade_time", "ts_code")
-);
+
+
 
 
 -- IMMUTABLE函数,timestamptz转日期
@@ -425,42 +472,6 @@ SELECT add_compression_policy('a_stock_level1_data', INTERVAL '7 days');
 
 
 
-CREATE TABLE public.ods_a_stock_level1_data (
-	ts_code varchar(16) NOT NULL,
-	trade_time timestamptz(6) NOT NULL,
-	last_price float8 NULL,
-	"open" float8 NULL,
-	high float8 NULL,
-	low float8 NULL,
-	pre_close float8 NULL,
-	volume int8 NULL,
-	amount float8 NULL,
-	transaction_num int8 NULL,
-	bid_price1 float8 NULL,
-	bid_volume1 int8 NULL,
-	bid_price2 float8 NULL,
-	bid_volume2 int8 NULL,
-	bid_price3 float8 NULL,
-	bid_volume3 int8 NULL,
-	bid_price4 float8 NULL,
-	bid_volume4 int8 NULL,
-	bid_price5 float8 NULL,
-	bid_volume5 int8 NULL,
-	ask_price1 float8 NULL,
-	ask_volume1 int8 NULL,
-	ask_price2 float8 NULL,
-	ask_volume2 int8 NULL,
-	ask_price3 float8 NULL,
-	ask_volume3 int8 NULL,
-	ask_price4 float8 NULL,
-	ask_volume4 int8 NULL,
-	ask_price5 float8 NULL,
-	ask_volume5 int8 NULL,
-	CONSTRAINT ods_a_stock_level1_data_unique UNIQUE (ts_code, trade_time)
-);
-SELECT create_hypertable('ods_a_stock_level1_data', 'trade_time', migrate_data => true);
-ALTER TABLE ods_a_stock_level1_data SET (timescaledb.compress,timescaledb.compress_segmentby = 'ts_code');
-SELECT add_compression_policy('ods_a_stock_level1_data', INTERVAL '3 days');
 
 
 
