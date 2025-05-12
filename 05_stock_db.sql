@@ -45,7 +45,7 @@ CREATE TABLE public.a_stock_5m_kline_wfq_baostock (
 	"close" numeric(18, 4) NULL,
 	volume numeric(18, 4) NULL,
 	amount numeric(18, 4) NULL,
-	adjust_flag int4 NULL,
+	adjust_flag text NULL,
 	CONSTRAINT a_stock_5m_kline_wfq_baostock_pkey PRIMARY KEY (trade_time, ts_code)
 );
 CREATE INDEX a_stock_5m_kline_wfq_baostock_trade_time_idx ON public.a_stock_5m_kline_wfq_baostock USING btree (trade_time);
@@ -53,7 +53,6 @@ CREATE INDEX idx_5m_kline_wfq_baostock_ts_code ON public.a_stock_5m_kline_wfq_ba
 SELECT create_hypertable('a_stock_5m_kline_wfq_baostock', 'trade_time');
 ALTER TABLE a_stock_30m_kline_wfq_baostock SET (timescaledb.compress, timescaledb.compress_segmentby = 'ts_code');
 -- SELECT add_compression_policy('a_stock_30m_kline_wfq_baostock', INTERVAL '2 days');
-
 
 CREATE TABLE public.a_stock_30m_kline_wfq_baostock (
 	trade_time timestamp NOT NULL,
@@ -72,6 +71,33 @@ CREATE INDEX idx_30m_kline_wfq_baostock_ts_code ON public.a_stock_30m_kline_wfq_
 SELECT create_hypertable('a_stock_30m_kline_wfq_baostock', 'trade_time', migrate_data => true);
 ALTER TABLE a_stock_30m_kline_wfq_baostock SET (timescaledb.compress, timescaledb.compress_segmentby = 'ts_code');
 SELECT add_compression_policy('a_stock_30m_kline_wfq_baostock', INTERVAL '2 days');
+
+
+CREATE TABLE public.a_stock_1d_kline_wfq_baostock (
+	trade_date date NOT NULL,
+	ts_code text NOT NULL,
+	"open" numeric NULL,
+	high numeric NULL,
+	low numeric NULL,
+	"close" numeric NULL,
+	volume int8 NULL,
+	amount numeric NULL,
+	turn numeric NULL,
+	adjust_flag text NULL,
+	pre_close numeric NULL,
+	pct_chg numeric NULL,
+	pe_ttm numeric NULL,
+	pb_mrq numeric NULL,
+	ps_ttm numeric NULL,
+	pcf_ncf_ttm numeric NULL,
+	trade_status text NULL,
+	is_st text NULL,
+	CONSTRAINT a_stock_1d_kline_wfq_baostock_pkey PRIMARY KEY (trade_date, ts_code)
+);
+CREATE INDEX a_stock_1d_kline_wfq_baostock_trade_date_idx ON public.a_stock_1d_kline_wfq_baostock USING btree (trade_date);
+CREATE INDEX a_stock_1d_kline_wfq_baostock_ts_code_idx ON public.a_stock_1d_kline_wfq_baostock USING btree (ts_code);
+SELECT create_hypertable('a_stock_1d_kline_wfq_baostock', 'trade_date');
+ALTER TABLE a_stock_1d_kline_wfq_baostock SET (timescaledb.compress, timescaledb.compress_segmentby = 'ts_code');
 
 
 CREATE TABLE public.a_stock_daily_basic (

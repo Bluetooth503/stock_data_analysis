@@ -2,6 +2,7 @@
 from common import *
 import baostock as bs
 import argparse
+import os
 
 # ================================= 读取配置文件 =================================
 config = load_config()
@@ -16,17 +17,18 @@ def get_stock_list(engine):
     query = "SELECT DISTINCT ts_code FROM a_stock_name ORDER BY ts_code"
     return pd.read_sql(query, engine)
 
-# ================================= 下载5分钟K线数据 =================================
-def download_5min_kline(ts_code: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """下载指定股票的5分钟K线数据"""
+
+# ================================= 下载日K线数据 =================================
+def download_1day_kline(ts_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """下载指定股票的日K线数据"""
     try:
         # 查询数据
         rs = bs.query_history_k_data_plus(
             code=convert_to_baostock_code(ts_code),
-            fields="date,time,code,open,high,low,close,volume,amount,adjustflag",
+            fields="date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM,isST",
             start_date=start_date,
             end_date=end_date,
-            frequency="5",
+            frequency="d",
             adjustflag="3"  # 不复权
         )
         
@@ -45,13 +47,22 @@ def download_5min_kline(ts_code: str, start_date: str, end_date: str) -> pd.Data
             
         # 创建DataFrame并进行数据处理
         df = pd.DataFrame(data_list, columns=rs.fields)
-        df['time'] = df['time'].apply(format_time)
-        df['trade_time'] = pd.to_datetime(df['date'] + ' ' + df['time'])
         df['code'] = df['code'].apply(convert_to_tushare_code)
         
         # 重命名并选择列
-        result_df = df.rename(columns={'code': 'ts_code', 'adjustflag': 'adjust_flag'})
-        result_df = result_df[['trade_time', 'ts_code', 'open', 'high', 'low', 'close', 'volume', 'amount', 'adjust_flag']].copy()
+        result_df = df.rename(columns={'date': 'trade_date',
+                                       'code': 'ts_code',
+                                       'preclose': 'pre_close',
+                                       'adjustflag': 'adjust_flag',
+                                       'tradestatus': 'trade_status',
+                                       'pctChg': 'pct_chg',
+                                       'peTTM': 'pe_ttm',
+                                       'pbMRQ': 'pb_mrq',
+                                       'psTTM': 'ps_ttm',
+                                       'pcfNcfTTM': 'pcf_ncf_ttm',
+                                       'isST': 'is_st'
+                                       })
+        result_df = result_df[['trade_date', 'ts_code', 'open', 'high', 'low', 'close', 'volume', 'amount', 'turn', 'adjust_flag', 'pre_close', 'pct_chg', 'pe_ttm', 'pb_mrq', 'ps_ttm', 'pcf_ncf_ttm', 'trade_status', 'is_st']].copy()
         
         # 过滤零成交量数据
         result_df = result_df[pd.to_numeric(result_df['volume']) > 0]
@@ -75,45 +86,20 @@ def download_5min_kline(ts_code: str, start_date: str, end_date: str) -> pd.Data
         logger.error(f"处理 {ts_code} 数据时发生错误: {str(e)}")
         return pd.DataFrame()
 
-def get_downloaded_stocks():
-    """从文件中读取已下载的股票代码"""
-    file_path = f'downloaded_stocks.txt'
-    if os.path.exists(file_path):
-        with open(file_path, 'r') as f:
-            return set(line.strip() for line in f)
-    return set()
-
-def save_downloaded_stock(ts_code):
-    """保存已下载的股票代码到文件"""
-    file_path = f'downloaded_stocks.txt'
-    with open(file_path, 'a') as f:
-        f.write(f'{ts_code}\n')
-
-def download_and_store_data(engine, stocks, start_date, end_date, batch_size=5):
+def download_and_store_data(engine, stocks, start_date, end_date, batch_size=500):
     """分批下载并存储数据"""
     logger.info(f"开始下载数据，时间范围: {start_date} 至 {end_date}")
     
-    # 获取已下载的股票代码
-    downloaded_stocks = get_downloaded_stocks()
-    logger.info(f"已下载的股票数量: {len(downloaded_stocks)}")
-    
-    # 过滤掉已下载的股票
-    stocks_to_download = [stock for stock in stocks if stock not in downloaded_stocks]
-    logger.info(f"待下载的股票数量: {len(stocks_to_download)}")
-    
     # 分批处理股票
-    for i in range(0, len(stocks_to_download), batch_size):
-        # batch_stocks = stocks[i:i + batch_size]
-        batch_stocks = stocks_to_download[i:i + batch_size]
+    for i in range(0, len(stocks), batch_size):
+        batch_stocks = stocks[i:i + batch_size]
         all_data = []  # 用于存储当前批次下载的数据
         
         for ts_code in tqdm(batch_stocks, desc=f'下载数据 (批次 {i // batch_size + 1})'):
-            df = download_5min_kline(ts_code=ts_code, start_date=start_date, end_date=end_date)
+            df = download_1day_kline(ts_code=ts_code, start_date=start_date, end_date=end_date)
             
             if not df.empty:
                 all_data.append(df)
-                # 保存已下载的股票代码
-                save_downloaded_stock(ts_code)
             else:
                 logger.warning(f"{ts_code} 在 {start_date} 至 {end_date} 期间没有数据")
         
@@ -124,9 +110,9 @@ def download_and_store_data(engine, stocks, start_date, end_date, batch_size=5):
             # 使用 save_to_database 保存数据
             if save_to_database(
                 df=final_df,
-                table_name='a_stock_5m_kline_wfq_baostock',
-                conflict_columns=['trade_time', 'ts_code'],
-                data_type='5分钟K线',
+                table_name='a_stock_1d_kline_wfq_baostock',
+                conflict_columns=['trade_date', 'ts_code'],
+                data_type='日K线',
                 engine=engine,
                 # update_columns=['open', 'high', 'low', 'close', 'volume', 'amount', 'adjust_flag']
             ):
@@ -148,10 +134,10 @@ def wait_for_data_ready(trade_date):
             bs_code = convert_to_baostock_code(test_stock)
             rs = bs.query_history_k_data_plus(
                 code=bs_code,
-                fields="date,time",
+                fields="date",
                 start_date=trade_date,
                 end_date=trade_date,
-                frequency="5",
+                frequency="d",
                 adjustflag="3"
             )
             
@@ -176,7 +162,7 @@ def wait_for_data_ready(trade_date):
 # ================================= 参数解析 =================================
 def parse_arguments():
     """解析命令行参数"""
-    parser = argparse.ArgumentParser(description='下载A股5分钟K线数据')
+    parser = argparse.ArgumentParser(description='下载A股日K线数据')
     parser.add_argument('--start_date', help='开始日期 (YYYY-MM-DD)', type=str)
     parser.add_argument('--end_date', help='结束日期 (YYYY-MM-DD)', type=str)
     return parser.parse_args()

@@ -220,7 +220,7 @@ def evaluate_factors(df, factor_cols, periods=[1, 5, 15]):
 
 if __name__ == '__main__':
     # 1.计算因子
-    # process_per_stock()
+    process_per_stock()
 
     # 2.读取因子数据集
     df = read_factor_data()
@@ -236,4 +236,4 @@ if __name__ == '__main__':
 
     # 4. 查看结果
     print(result_df)
-    print("已保存至 factor_evaluation.csv")
+    print("已保存至 factor01_evaluation.csv")
