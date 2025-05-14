@@ -47,7 +47,7 @@ class Config:
         self.config = load_config()
         self.trading_config = {
             'qmt_path': self.config.get('qmt', 'path'),
-            'buy_threshold': 20000,  # 买入资金阈值
+            'buy_threshold': 30000,  # 买入资金阈值
             'buy_price_ratio': 1.005,  # 买入价格比例
             'sell_price_ratio': 0.995,  # 卖出价格比例
             'min_volume': 100,  # 最小交易数量
@@ -118,7 +118,7 @@ class QMTTrader:
         """订阅股票行情"""
         for code in code_list:
             # 订阅K线数据
-            kline_seq = xtdata.subscribe_quote(code, '30m')
+            kline_seq = xtdata.subscribe_quote(code, '5m')
             if kline_seq > 0:  # 订阅成功
                 self.subscribed_codes[f"{code}_kline"] = kline_seq
                 logger.info(f"订阅 {code} K线数据成功，订阅号: {kline_seq}")
@@ -359,7 +359,7 @@ if __name__ == "__main__":
         top_stocks = get_top_stocks()
         code_list = top_stocks['ts_code'].tolist()
         # 每次执行时下载基础周期数据
-        xtdata.download_history_data2(code_list, period='30m', start_time='20240101', end_time='', incrementally=True)
+        xtdata.download_history_data2(code_list, period='5m', start_time='20240101', end_time='', incrementally=True)
         # 订阅行情数据
         trader.subscribe_stocks(code_list)
         # 设置定时任务

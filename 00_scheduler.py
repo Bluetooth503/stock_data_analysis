@@ -107,13 +107,15 @@ def run_script(script_name, conda_env=None):
 schedule.every().day.at("00:00").do(task_manager.reset_daily)
 
 # 无依赖关系的任务
-schedule.every().day.at("09:10").do(lambda: run_script_no_check("01_a_stock_level1_data.py", "stock"))
-schedule.every().day.at("09:15").do(lambda: run_script_no_check("04_qmt_monitor_ha_st_30m.py", "stock"))
-schedule.every().day.at("16:30").do(lambda: run_script_no_check("01_ods_a_stock_level1_data.py", "stock"))
+schedule.every().day.at("09:10").do(lambda: run_script_no_check("04_qmt_monitor_ha_st_30m.py", "stock"))
+schedule.every().day.at("09:15").do(lambda: run_script_no_check("01_a_stock_level1_data.py", "stock"))
+schedule.every().day.at("16:30").do(lambda: run_script_no_check("01_a_stock_level1_data_2_parquet.py", "stock"))
 schedule.every().day.at("16:40").do(lambda: run_script_no_check("01_a_stock_daily_basic.py", "stock"))
 schedule.every().day.at("16:50").do(lambda: run_script_no_check("01_ths_limit_list.py", "stock"))
-schedule.every().day.at("18:00").do(lambda: run_script_no_check("01_a_stock_30m_kline_wfq_baostock.py", "stock"))
-schedule.every().day.at("19:00").do(lambda: run_script_no_check("01_a_index_1day_kline_baostock.py", "stock"))
+schedule.every().day.at("17:00").do(lambda: run_script_no_check("01_a_stock_5m_kline_wfq_baostock.py", "stock"))
+schedule.every().day.at("17:05").do(lambda: run_script_no_check("01_a_stock_30m_kline_wfq_baostock.py", "stock"))
+schedule.every().day.at("17:10").do(lambda: run_script_no_check("01_a_stock_1d_kline_wfq_baostock.py", "stock"))
+schedule.every().day.at("17:15").do(lambda: run_script_no_check("01_a_index_1day_kline_baostock.py", "stock"))
 
 # ================================= 周任务 =================================
 # 无依赖关系的周任务

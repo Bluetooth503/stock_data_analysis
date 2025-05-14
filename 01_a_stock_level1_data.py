@@ -243,7 +243,7 @@ class Level1DataProcessor:
             # 校验交易日
             current_date = datetime.now().strftime('%Y-%m-%d')
             if not is_trade_date(current_date):
-                logger.warning(f"{end_date} 不是交易日，程序退出")
+                logger.warning(f"{current_date} 不是交易日，程序退出")
                 return            
 
             process_thread = threading.Thread(target=self._process_data_worker)

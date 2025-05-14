@@ -74,61 +74,9 @@ def convert_csv_to_parquet(csv_path, dest_dir, date_str):
 
         # 添加ts_code列
         df['ts_code'] = ts_code
+        df['trade_time'] = pd.to_datetime(df['trade_time']).dt.tz_localize('Asia/Shanghai').dt.tz_convert('UTC').view('int64') // 10**6
+        df = df.sort_values('trade_time')
 
-        # 转换trade_time为timestamp类型
-        # 检查时间格式，处理可能的不同格式
-        if df['trade_time'].iloc[0].isdigit() or (isinstance(df['trade_time'].iloc[0], (int, float)) and df['trade_time'].iloc[0] > 1000000000):
-            # 如果是数字格式（可能是毫秒时间戳），转换为秒级时间戳
-            df['trade_time'] = pd.to_numeric(df['trade_time'], errors='coerce')
-            # 如果是毫秒时间戳，转换为秒级
-            if (df['trade_time'] > 1000000000000).any():
-                df['trade_time'] = df['trade_time'] / 1000
-            df['trade_time'] = pd.to_datetime(df['trade_time'], unit='s')
-        else:
-            # 如果是字符串日期格式，直接转换
-            df['trade_time'] = pd.to_datetime(df['trade_time'], errors='coerce')
-
-        # 检查时间是否在交易时间范围内（9:30-11:30, 13:00-15:00）
-        def is_trading_hour(dt):
-            if dt.hour < 9 or dt.hour > 15:
-                return False
-            if dt.hour == 9 and dt.minute < 30:
-                return False
-            if dt.hour == 11 and dt.minute > 30:
-                return False
-            if dt.hour == 12:
-                return False
-            return True
-
-        # 记录非交易时间的数据数量
-        non_trading_hours = df[~df['trade_time'].apply(is_trading_hour)]
-        if len(non_trading_hours) > 0:
-            logger.warning(f"发现 {len(non_trading_hours)} 条非交易时间内的数据，时间范围: {non_trading_hours['trade_time'].min()} - {non_trading_hours['trade_time'].max()}")
-
-            # 检查是否所有数据都在非交易时间
-            if len(non_trading_hours) == len(df):
-                logger.error(f"所有数据都在非交易时间内，可能时间戳有问题: {os.path.basename(csv_path)}")
-
-                # 尝试修复时间戳
-                # 假设CSV文件名中包含日期信息，例如：sh600000_20250102.csv
-                date_match = re.search(r'_(\d{8})\.', os.path.basename(csv_path))
-                if date_match:
-                    date_str = date_match.group(1)
-                    logger.info(f"尝试使用文件名中的日期 {date_str} 修复时间戳")
-
-                    # 提取时间部分（假设格式为 HH:MM:SS）
-                    if isinstance(df['trade_time'].iloc[0], pd.Timestamp):
-                        # 创建新的日期时间
-                        def fix_date(dt):
-                            return pd.Timestamp(
-                                year=int(date_str[0:4]),
-                                month=int(date_str[4:6]),
-                                day=int(date_str[6:8]),
-                                hour=dt.hour,
-                                minute=dt.minute,
-                                second=dt.second
-                            )
-                        df['trade_time'] = df['trade_time'].apply(fix_date)
 
         # 添加缺失的列并设置为NULL
         required_columns = [
@@ -171,7 +119,6 @@ def convert_csv_to_parquet(csv_path, dest_dir, date_str):
         parquet_path = os.path.join(stock_dir, f"{date_str}.parquet")
         df.to_parquet(parquet_path, compression='zstd', index=False)
 
-        logger.info(f"成功转换 {os.path.basename(csv_path)} 到 {parquet_path}")
         return True
     except Exception as e:
         logger.error(f"转换 {os.path.basename(csv_path)} 失败: {str(e)}")

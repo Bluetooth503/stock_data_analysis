@@ -89,22 +89,13 @@ def save_downloaded_stock(ts_code):
     with open(file_path, 'a') as f:
         f.write(f'{ts_code}\n')
 
-def download_and_store_data(engine, stocks, start_date, end_date, batch_size=5):
+def download_and_store_data(engine, stocks, start_date, end_date, batch_size=500):
     """分批下载并存储数据"""
     logger.info(f"开始下载数据，时间范围: {start_date} 至 {end_date}")
     
-    # 获取已下载的股票代码
-    downloaded_stocks = get_downloaded_stocks()
-    logger.info(f"已下载的股票数量: {len(downloaded_stocks)}")
-    
-    # 过滤掉已下载的股票
-    stocks_to_download = [stock for stock in stocks if stock not in downloaded_stocks]
-    logger.info(f"待下载的股票数量: {len(stocks_to_download)}")
-    
     # 分批处理股票
-    for i in range(0, len(stocks_to_download), batch_size):
-        # batch_stocks = stocks[i:i + batch_size]
-        batch_stocks = stocks_to_download[i:i + batch_size]
+    for i in range(0, len(stocks), batch_size):
+        batch_stocks = stocks[i:i + batch_size]
         all_data = []  # 用于存储当前批次下载的数据
         
         for ts_code in tqdm(batch_stocks, desc=f'下载数据 (批次 {i // batch_size + 1})'):

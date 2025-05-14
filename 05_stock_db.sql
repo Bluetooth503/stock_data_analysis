@@ -33,7 +33,7 @@ CREATE TABLE public.ods_a_stock_level1_data (
 );
 SELECT create_hypertable('ods_a_stock_level1_data', 'trade_time', migrate_data => true);
 ALTER TABLE ods_a_stock_level1_data SET (timescaledb.compress,timescaledb.compress_segmentby = 'ts_code');
-SELECT add_compression_policy('ods_a_stock_level1_data', INTERVAL '15 days');
+SELECT add_compression_policy('ods_a_stock_level1_data', INTERVAL '2 days');
 
 
 CREATE TABLE public.a_stock_5m_kline_wfq_baostock (
@@ -51,8 +51,8 @@ CREATE TABLE public.a_stock_5m_kline_wfq_baostock (
 CREATE INDEX a_stock_5m_kline_wfq_baostock_trade_time_idx ON public.a_stock_5m_kline_wfq_baostock USING btree (trade_time);
 CREATE INDEX idx_5m_kline_wfq_baostock_ts_code ON public.a_stock_5m_kline_wfq_baostock USING btree (ts_code);
 SELECT create_hypertable('a_stock_5m_kline_wfq_baostock', 'trade_time');
-ALTER TABLE a_stock_30m_kline_wfq_baostock SET (timescaledb.compress, timescaledb.compress_segmentby = 'ts_code');
--- SELECT add_compression_policy('a_stock_30m_kline_wfq_baostock', INTERVAL '2 days');
+ALTER TABLE a_stock_5m_kline_wfq_baostock SET (timescaledb.compress, timescaledb.compress_segmentby = 'ts_code');
+SELECT add_compression_policy('a_stock_5m_kline_wfq_baostock', INTERVAL '15 days');
 
 CREATE TABLE public.a_stock_30m_kline_wfq_baostock (
 	trade_time timestamp NOT NULL,
@@ -70,7 +70,7 @@ CREATE INDEX a_stock_30m_kline_wfq_baostock_trade_time_idx ON public.a_stock_30m
 CREATE INDEX idx_30m_kline_wfq_baostock_ts_code ON public.a_stock_30m_kline_wfq_baostock USING btree (ts_code);
 SELECT create_hypertable('a_stock_30m_kline_wfq_baostock', 'trade_time', migrate_data => true);
 ALTER TABLE a_stock_30m_kline_wfq_baostock SET (timescaledb.compress, timescaledb.compress_segmentby = 'ts_code');
-SELECT add_compression_policy('a_stock_30m_kline_wfq_baostock', INTERVAL '2 days');
+SELECT add_compression_policy('a_stock_30m_kline_wfq_baostock', INTERVAL '15 days');
 
 
 CREATE TABLE public.a_stock_1d_kline_wfq_baostock (
@@ -98,6 +98,7 @@ CREATE INDEX a_stock_1d_kline_wfq_baostock_trade_date_idx ON public.a_stock_1d_k
 CREATE INDEX a_stock_1d_kline_wfq_baostock_ts_code_idx ON public.a_stock_1d_kline_wfq_baostock USING btree (ts_code);
 SELECT create_hypertable('a_stock_1d_kline_wfq_baostock', 'trade_date');
 ALTER TABLE a_stock_1d_kline_wfq_baostock SET (timescaledb.compress, timescaledb.compress_segmentby = 'ts_code');
+SELECT add_compression_policy('a_stock_1d_kline_wfq_baostock', INTERVAL '15 days');
 
 
 CREATE TABLE public.a_stock_daily_basic (
@@ -124,26 +125,6 @@ CREATE TABLE public.a_stock_daily_basic (
 );
 CREATE INDEX a_stock_daily_basic_trade_date_idx ON public.a_stock_daily_basic USING btree (trade_date);
 CREATE INDEX a_stock_daily_basic_ts_code_idx ON public.a_stock_daily_basic USING btree (ts_code);
-COMMENT ON COLUMN "public"."a_stock_daily_basic"."ts_code" IS 'TS股票代码';
-COMMENT ON COLUMN "public"."a_stock_daily_basic"."trade_date" IS '交易日期';
-COMMENT ON COLUMN "public"."a_stock_daily_basic"."close" IS '当日收盘价';
-COMMENT ON COLUMN "public"."a_stock_daily_basic"."turnover_rate" IS '换手率(%)';
-COMMENT ON COLUMN "public"."a_stock_daily_basic"."turnover_rate_f" IS '换手率(自由流通股)';
-COMMENT ON COLUMN "public"."a_stock_daily_basic"."volume_ratio" IS '量比';
-COMMENT ON COLUMN "public"."a_stock_daily_basic"."pe" IS '市盈率(总市值/净利润，亏损的PE为空)';
-COMMENT ON COLUMN "public"."a_stock_daily_basic"."pe_ttm" IS '市盈率(TTM，亏损的PE为空)';
-COMMENT ON COLUMN "public"."a_stock_daily_basic"."pb" IS '市净率(总市值/净资产)';
-COMMENT ON COLUMN "public"."a_stock_daily_basic"."ps" IS '市销率';
-COMMENT ON COLUMN "public"."a_stock_daily_basic"."ps_ttm" IS '市销率(TTM)';
-COMMENT ON COLUMN "public"."a_stock_daily_basic"."dv_ratio" IS '股息率(%)';
-COMMENT ON COLUMN "public"."a_stock_daily_basic"."dv_ttm" IS '股息率(TTM)(%)';
-COMMENT ON COLUMN "public"."a_stock_daily_basic"."total_share" IS '总股本(万股)';
-COMMENT ON COLUMN "public"."a_stock_daily_basic"."float_share" IS '流通股本(万股)';
-COMMENT ON COLUMN "public"."a_stock_daily_basic"."free_share" IS '自由流通股本(万股)';
-COMMENT ON COLUMN "public"."a_stock_daily_basic"."total_mv" IS '总市值(万元)';
-COMMENT ON COLUMN "public"."a_stock_daily_basic"."circ_mv" IS '流通市值(万元)';
-COMMENT ON COLUMN "public"."a_stock_daily_basic"."circ_mv_range" IS '流通市值区间';
-COMMENT ON TABLE "public"."a_stock_daily_basic" IS 'A股每日基础数据表';
 SELECT create_hypertable('a_stock_daily_basic', 'trade_date', migrate_data => true);
 ALTER TABLE a_stock_daily_basic SET (timescaledb.compress, timescaledb.compress_segmentby = 'ts_code');
 SELECT add_compression_policy('a_stock_daily_basic', INTERVAL '2 days');

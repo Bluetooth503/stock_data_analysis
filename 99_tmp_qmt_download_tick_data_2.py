@@ -19,36 +19,23 @@ print(f"账户状态: {account_status}")
 account_info = xt_trader.query_account_infos()
 print(f"账户信息: {account_info}")
 
+def get_all_stocks():
+    """获取所有股票代码"""
+    # stocks = xtdata.get_stock_list_in_sector('沪深A股')
+    stocks = xtdata.get_stock_list_in_sector('上证50')
+    return stocks
 
 def on_progress(data):
-    print(f"已完成:{data['finished']}/{data['total']} - {data['message']}")
+    # print(data)
+    if data['finished'] % 500 == 0:
+        logger.info(f"已完成:{data['finished']}/{data['total']} - {data['message']}")
 
-date = '20250507'
-stocks = ['601865.SH','600595.SH']
+stocks = get_all_stocks()
 xtdata.download_history_data2(
     stock_list=stocks,
     period='tick',
-    start_time=date,
-    end_time=date,
+    start_time='20250508',
+    end_time='20250508',
     incrementally=True,
     callback=on_progress
 )
-
-
-tick_data = xtdata.get_market_data_ex(
-    stock_list=stocks,
-    period='tick',
-    start_time=date,
-    end_time=date
-)
-
-
-for stock in tqdm(stocks):
-    if tick_data is not None and stock in tick_data:
-        df = tick_data[stock]
-        df['ts_code'] = stock
-        if isinstance(df, pd.DataFrame) and not df.empty:
-            # 生成文件名
-            file_name = f'{date}_{stock}.parquet'
-            df.to_parquet(file_name, index=False, compression='snappy')
-            print(f"保存 {file_name} 成功")
